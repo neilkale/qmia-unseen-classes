@@ -147,7 +147,7 @@ def train_model(config, args, callbacks=None, rerun=False):
     
     datamodule = CustomDataModule(
         dataset_name=args.dataset,
-        num_workers=16,
+        num_workers=32,
         image_size=args.image_size,
         base_image_size=args.base_image_size,
         batch_size=args.batch_size,
@@ -195,7 +195,7 @@ def train_model(config, args, callbacks=None, rerun=False):
         callbacks=callbacks,
         devices=-1 if not args.DEBUG else 1,
         default_root_dir=checkpoint_dir,
-        strategy='fsdp' if not args.DEBUG else 'ddp',
+        strategy='ddp' if not args.DEBUG else 'ddp',
         gradient_clip_val=config["gradient_clip_val"],
         log_every_n_steps=10,
     )

@@ -117,28 +117,21 @@ class LightningBaseNet(pl.LightningModule):
         loss = self.loss_fn(logits, targets).mean()
         acc1, acc5 = accuracy(logits, targets, topk=(1, 5))
 
+        # Log directly instead of accumulating
+        self.log("ptl/val_loss", loss, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("ptl/val_acc1", acc1, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("ptl/val_acc5", acc5, on_epoch=True, prog_bar=True, sync_dist=True)
+
         rets = {
             "val_loss": loss,
             "val_acc1": acc1,
             "val_acc5": acc5,
         }
-        self.validation_step_outputs.append(rets)
         return rets
     
     def on_validation_epoch_end(self):
-        avg_loss = torch.stack(
-            [x["val_loss"] for x in self.validation_step_outputs]
-        ).mean()
-        avg_acc1 = torch.stack(
-            [x["val_acc1"] for x in self.validation_step_outputs]
-        ).mean()
-        avg_acc5 = torch.stack(
-            [x["val_acc5"] for x in self.validation_step_outputs]
-        ).mean()
-        self.log("ptl/val_loss", avg_loss, prog_bar=True, sync_dist=True)
-        self.log("ptl/val_acc1", avg_acc1, prog_bar=True, sync_dist=True)
-        self.log("ptl/val_acc5", avg_acc5, prog_bar=True, sync_dist=True)
-        self.validation_step_outputs.clear()
+        # Lightning handles averaging automatically
+        pass
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
         samples, targets, base_samples = get_batch(batch)

@@ -288,13 +288,18 @@ def evaluate_mia(args, rerun=False):
         print(f"Results already exist at {args.attack_results_path}.")
         return
     else:
-        # Remove the existing results directory if it exists
-        if os.path.exists(args.attack_results_path):
-            print(f"Removing existing results directory at {args.attack_results_path}.")
-            shutil.rmtree(args.attack_results_path)
-        # Create a new results directory
-        print(f"Creating results directory at {args.attack_results_path}.")
+        # Ensure the results directory exists (safe for multiple processes)
         os.makedirs(args.attack_results_path, exist_ok=True)
+        
+        # Remove old prediction files if rerunning
+        if rerun:
+            import glob
+            old_files = glob.glob(os.path.join(args.attack_results_path, "predictions_*.pt"))
+            for f in old_files:
+                try:
+                    os.remove(f)
+                except FileNotFoundError:
+                    pass  # Another process already removed it
     
     # Create lightning model
     
