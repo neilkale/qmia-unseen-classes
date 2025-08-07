@@ -1,0 +1,7 @@
+#!/bin/bash
+
+# Run the scripts
+bash rebuttal_scripts/test_dropout_multisetting_c20_resnet50.sh
+bash rebuttal_scripts/test_dropout_multisetting_c20_wideresnet.sh
+bash rebuttal_scripts/test_dropout_multisetting_c10_resnet50.sh
+bash rebuttal_scripts/test_dropout_multisetting_c10_wideresnet.sh

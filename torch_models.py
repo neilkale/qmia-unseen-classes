@@ -15,6 +15,13 @@ from cifar_architectures import (
     ResNet50,
     ResNet50ExtraInputs,
     WideResNet,
+    ResNet10DP,
+    ResNet18DP,
+    ResNet34DP,
+    ResNet50DP,
+    ResNet101DP,
+    ResNet152DP,
+    ResNet50NoNorm,
 )
 
 # from transformers import AutoModelForImageClassification, AutoFeatureExtractor, ResNetForImageClassification, \
@@ -187,8 +194,38 @@ def get_cifar_resnet_model(
             return ResNet34(num_classes=num_classes)
         elif model == "cifar-resnet-50":
             return ResNet50(num_classes=num_classes)
+        elif model == "cifar-resnet-10-dp":
+            return ResNet10DP(num_classes=num_classes)
+        elif model == "cifar-resnet-18-dp":
+            return ResNet18DP(num_classes=num_classes)
+        elif model == "cifar-resnet-34-dp":
+            return ResNet34DP(num_classes=num_classes)
+        elif model == "cifar-resnet-50-dp":
+            return ResNet50DP(num_classes=num_classes)
+        elif model == "cifar-resnet-50-nonorm":
+            return ResNet50NoNorm(num_classes=num_classes)
         elif model == "cifar-wideresnet":
             return WideResNet(num_classes=num_classes)
+        elif model == "cifar-wideresnet-dp":
+            # DP-compatible WideResNet using GroupNorm instead of BatchNorm
+            import functools
+            # Use GroupNorm with 8 groups as a BatchNorm replacement for DP
+            group_norm_fn = functools.partial(torch.nn.GroupNorm, 8)
+            return WideResNet(num_classes=num_classes, bn=group_norm_fn)
+        elif model == "cifar-vit":
+            # Configure a small ViT model for 32x32 images
+            vit_config = ViTConfig(
+                image_size=32,
+                patch_size=4,
+                num_channels=3,
+                hidden_size=192,
+                num_hidden_layers=6,
+                num_attention_heads=3,
+                intermediate_size=768,
+                num_labels=num_classes,
+            )
+            vit_model = ViTForImageClassification(config=vit_config)
+            return ViTLogitsWrapper(vit_model)  # Wrap to extract logits
     else:
         if model == "cifar-resnet-18":
             return ResNet18ExtraInputs(
@@ -217,6 +254,102 @@ def get_cifar_resnet_model(
 
     raise NotImplementedError
 
+def get_fresh_vit_model(model="vit", num_classes=10):
+    """
+    Creates a standard ViT model from scratch using a config.
+    """
+    if model == "vit":
+        # Standard ViT-Base configuration
+        config = ViTConfig(
+            hidden_size=768,
+            num_hidden_layers=12,
+            num_attention_heads=12,
+            intermediate_size=3072,
+            num_labels=num_classes
+        )
+    else:
+        raise NotImplementedError(f"Fresh ViT model '{model}' not implemented")
+
+    # Create a new ViT model from scratch using the configuration
+    model = ViTForImageClassification(config=config)
+    return model
+
+class ViTLogitsWrapper(torch.nn.Module):
+    """Wrapper for ViT models to extract logits from ImageClassifierOutput"""
+    def __init__(self, vit_model):
+        super().__init__()
+        self.vit_model = vit_model
+    
+    def forward(self, x):
+        output = self.vit_model(x)
+        return output.logits
+
+def get_fresh_tabular_mlp_model(
+    architecture, num_classes=10, hidden_dims=[], extra_inputs=None
+):
+    """
+    Creates a tabular MLP model for structured data.
+    
+    Supports both predefined architectures and custom layer specifications:
+    - tabular-purchase-mlp: [512, 256, 128, 64]
+    - tabular-purchase-mlp-small: [64, 64] 
+    - tabular-purchase-mlp-large: [2048, 1024, 512, 256, 128]
+    - tabular-purchase-mlp-{dim1}_{dim2}_...: Custom layer dimensions
+    
+    Examples:
+    - tabular-purchase-mlp-256_128: [256, 128]
+    - tabular-purchase-mlp-512_512_256: [512, 512, 256]
+    """
+    
+    if architecture == "tabular-purchase-mlp":
+        input_dim = 600
+        layer_dims = [512, 256, 128, 64]
+    elif architecture == "tabular-purchase-mlp-wide":
+        input_dim = 600
+        layer_dims = [512, 512]
+    elif architecture == "tabular-purchase-mlp-small":
+        input_dim = 600
+        layer_dims = [64, 64]
+    elif architecture == "tabular-purchase-mlp-large":
+        input_dim = 600
+        layer_dims = [2048, 1024, 512, 256, 128]
+    elif architecture == "tabular-purchase-mlp-largedeep":
+        input_dim = 600
+        layer_dims = [1024, 768, 768, 512, 512, 384, 384, 256, 128]
+    elif architecture == "tabular-purchase-mlp-xlarge":
+        input_dim = 600
+        layer_dims = [2048, 2048, 1024, 1024, 512, 256]
+    elif architecture == "tabular-purchase-mlp-xxlarge":
+        input_dim = 600
+        layer_dims = [4096, 4096, 2048, 2048, 1024, 512]
+    elif architecture.startswith("tabular-purchase-mlp-") and "_" in architecture:
+        # Parse custom layer dimensions from architecture name
+        # e.g., "tabular-purchase-mlp-128_128" -> [128, 128]
+        input_dim = 600
+        try:
+            dims_str = architecture.replace("tabular-purchase-mlp-", "")
+            layer_dims = [int(dim) for dim in dims_str.split("_")]
+            if not layer_dims:
+                raise ValueError("No layer dimensions specified")
+        except ValueError as e:
+            raise ValueError(f"Invalid layer dimensions in '{architecture}': {e}")
+    else:
+        raise NotImplementedError(f"Tabular model '{architecture}' not implemented")
+    
+    layers = []
+    prev_dim = input_dim
+    
+    # Add hidden layers with ReLU activation
+    for dim in layer_dims:
+        layers.append(torch.nn.Linear(prev_dim, dim))
+        layers.append(torch.nn.ReLU())
+        prev_dim = dim
+    
+    # Add output layer (no activation)
+    layers.append(torch.nn.Linear(prev_dim, num_classes))
+    
+    model = torch.nn.Sequential(*layers)
+    return model
 
 def get_model(
     architecture,
@@ -234,6 +367,17 @@ def get_model(
         )
     elif architecture.startswith("resnet"):
         model = get_fresh_resnet_model(
+            architecture,
+            num_classes=n_outputs,
+            hidden_dims=hidden_dims,
+            extra_inputs=extra_inputs,
+        )
+    elif architecture.startswith("vit"):
+        model = get_fresh_vit_model(
+            model=architecture, num_classes=n_outputs
+        )
+    elif architecture.startswith("tabular"):
+        model = get_fresh_tabular_mlp_model(
             architecture,
             num_classes=n_outputs,
             hidden_dims=hidden_dims,

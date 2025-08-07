@@ -1,17 +1,21 @@
 import os
 import argparse
-import shutil
 import sys
 import torch
 import numpy as np
 import random
+import glob
+
 
 from tqdm import tqdm
 from lightning_utils import LightningQMIA, CustomWriter
 from data_utils import CustomDataModule
 import pytorch_lightning as pl
-import glob
 import torch.distributed as dist
+import matplotlib.pyplot as plt
+from sklearn.metrics import roc_curve, auc
+import scipy.stats as ss
+import pandas as pd
 
 def argparser():
     parser = argparse.ArgumentParser(description="QMIA evaluation")
@@ -131,6 +135,14 @@ def argparser():
         "--rerun", action="store_true", help="whether to rerun the evaluation"
     )
 
+    # Differential Privacy parameters (for finding the correct base model directory)
+    parser.add_argument("--enable_dp", action="store_true", help="Base model was trained with differential privacy")
+    parser.add_argument("--dp_noise_multiplier", type=float, default=1.0, help="Noise multiplier used for base model DP-SGD")
+    parser.add_argument("--dp_max_grad_norm", type=float, default=1.0, help="Maximum gradient norm used for base model DP clipping")
+    parser.add_argument("--dp_target_epsilon", type=float, default=None, help="Target epsilon used for base model DP (if None, noise_multiplier was used)")
+    parser.add_argument("--dp_target_delta", type=float, default=1e-5, help="Target delta used for base model DP")
+    parser.add_argument("--dp_secure_rng", action="store_true", help="Cryptographically secure RNG was used for base model DP")
+
     args = parser.parse_args()
     seed = args.seed
     torch.manual_seed(seed)
@@ -158,11 +170,26 @@ def argparser():
     if args.cls_samples:
         cls_drop_str += f"_samples_{args.cls_samples}"
     
+    # Create DP suffix for base model directory naming (same logic as train_base.py)
+    dp_suffix = ""
+    if args.enable_dp:
+        dp_parts = []
+        if args.dp_target_epsilon is not None:
+            dp_parts.append(f"eps{args.dp_target_epsilon}")
+            if args.dp_target_delta != 1e-5:  # Only include delta if non-standard
+                dp_parts.append(f"delta{args.dp_target_delta}")
+        else:
+            dp_parts.append(f"noise{args.dp_noise_multiplier}")
+        dp_parts.append(f"clip{args.dp_max_grad_norm}")
+        if args.dp_secure_rng:
+            dp_parts.append("secure")
+        dp_suffix = "_dp_" + "_".join(dp_parts)
+    
     args.attack_checkpoint_path = os.path.join(
         args.model_root,
         "mia",
         "base_" + args.base_model_dataset,
-        args.base_architecture,
+        args.base_architecture + dp_suffix,  # Include DP suffix in attack path too
         "attack_" + args.attack_dataset,
         args.architecture,
         "score_fn_" + args.score_fn,
@@ -174,7 +201,7 @@ def argparser():
         args.model_root,
         "base",
         args.base_model_dataset,
-        args.base_architecture
+        args.base_architecture + dp_suffix  # Include DP suffix to match train_base.py
     )
 
     args.attack_results_path = os.path.join(
@@ -275,16 +302,8 @@ def aggregate_predictions(results_path):
         if len(val_result[i]) > 0:
             print(f"  {name}: shape {val_result[i].shape}")
 
-    # print(f"\nRemoving {len(prediction_files)} original prediction files...")
-    # for pred_file in prediction_files:
-    #     # Only remove files that match the pattern predictions_*.pt but not the aggregated files
-    #     if os.path.basename(pred_file) not in ["predictions_test.pt", "predictions_val.pt"]:
-    #         os.remove(pred_file)
-    # print("Original prediction files removed")
-
-
 def evaluate_mia(args, rerun=False):
-    if os.path.exists(args.attack_results_path) and not rerun:
+    if os.path.exists(args.attack_results_path + "/predictions_test.pt") and not rerun:
         print(f"Results already exist at {args.attack_results_path}.")
         return
     else:
@@ -345,10 +364,6 @@ def evaluate_mia(args, rerun=False):
 
     print("Aggregating predictions...")
     aggregate_predictions(args.attack_results_path)
-
-import matplotlib.pyplot as plt
-from sklearn.metrics import roc_curve, auc
-import scipy.stats as ss
 
 def tpr_at_fpr(tprs, fprs, target_fpr):
     """
@@ -1388,26 +1403,74 @@ if __name__ == "__main__":
     test_preds = torch.load(os.path.join(args.attack_results_path, "predictions_test.pt"))
     val_preds = torch.load(os.path.join(args.attack_results_path, "predictions_val.pt"))
 
+    print(f"\nRemoving original prediction files...")
+    pred_files = glob.glob(os.path.join(args.attack_results_path, "predictions_*.pt"))
+    for pred_file in pred_files:
+        if os.path.basename(pred_file) not in ["predictions_test.pt", "predictions_val.pt"]:
+            os.remove(pred_file)
+    print("Original prediction files removed")
+
     if not os.path.exists(args.attack_plots_path):
         os.makedirs(args.attack_plots_path, exist_ok=True)
 
+    # Initialize stats collection
+    stats_data = []
+    
     print("Plotting ROC curves...")
-    plot_roc_curve(test_preds, val_preds)
+    # Overall statistics
+    overall_curve_data, _, _ = plot_roc_curve(test_preds, val_preds)
+    stats_data.append({
+        'dataset_type': 'overall',
+        'qmia_auc': overall_curve_data['qmia']['auc'],
+        'qmia_tpr_at_fpr_0.1%': overall_curve_data['qmia']['fpr_at_tpr_0.1'],
+        'qmia_tpr_at_fpr_1%': overall_curve_data['qmia']['fpr_at_tpr_1'],
+        'baseline_auc': overall_curve_data['baseline']['auc'],
+        'baseline_tpr_at_fpr_0.1%': overall_curve_data['baseline']['fpr_at_tpr_0.1'],
+        'baseline_tpr_at_fpr_1%': overall_curve_data['baseline']['fpr_at_tpr_1']
+    })
+    
     if args.cls_drop:
         # OOD
         test_mask = torch.tensor([label.item() in args.cls_drop for label in test_preds[3]])
         test_preds_ood = [pred[test_mask] for pred in test_preds]
         val_mask = torch.tensor([label.item() in args.cls_drop for label in val_preds[3]])
         val_preds_ood = [pred[val_mask] for pred in val_preds]
-        plot_roc_curve(test_preds_ood, val_preds_ood, test_label="private (OOD)", val_label="public (OOD)", title=f'(Dropped Class/es, {args.cls_drop})', save_path="roc_curve_ood")
+        ood_curve_data, _, _ = plot_roc_curve(test_preds_ood, val_preds_ood, test_label="private (OOD)", val_label="public (OOD)", title=f'(Dropped Class/es, {args.cls_drop})', save_path="roc_curve_ood")
+        
+        stats_data.append({
+            'dataset_type': 'out_of_distribution',
+            'qmia_auc': ood_curve_data['qmia']['auc'],
+            'qmia_tpr_at_fpr_0.1%': ood_curve_data['qmia']['fpr_at_tpr_0.1'],
+            'qmia_tpr_at_fpr_1%': ood_curve_data['qmia']['fpr_at_tpr_1'],
+            'baseline_auc': ood_curve_data['baseline']['auc'],
+            'baseline_tpr_at_fpr_0.1%': ood_curve_data['baseline']['fpr_at_tpr_0.1'],
+            'baseline_tpr_at_fpr_1%': ood_curve_data['baseline']['fpr_at_tpr_1']
+        })
+        
         # ID
         test_mask = torch.tensor([label.item() not in args.cls_drop for label in test_preds[3]])
-        test_preds_ood = [pred[test_mask] for pred in test_preds]
+        test_preds_id = [pred[test_mask] for pred in test_preds]
         val_mask = torch.tensor([label.item() not in args.cls_drop for label in val_preds[3]])
-        val_preds_ood = [pred[val_mask] for pred in val_preds]
+        val_preds_id = [pred[val_mask] for pred in val_preds]
         all_classes = np.arange(args.num_base_classes)
         kept_classes = np.setdiff1d(all_classes, args.cls_drop)
-        plot_roc_curve(test_preds_ood, val_preds_ood, test_label="private (ID)", val_label="public (ID)", title=f'(Kept Class/es, all but {args.cls_drop})', save_path="roc_curve_id")
+        id_curve_data, _, _ = plot_roc_curve(test_preds_id, val_preds_id, test_label="private (ID)", val_label="public (ID)", title=f'(Kept Class/es, all but {args.cls_drop})', save_path="roc_curve_id")
+        
+        stats_data.append({
+            'dataset_type': 'in_distribution',
+            'qmia_auc': id_curve_data['qmia']['auc'],
+            'qmia_tpr_at_fpr_0.1%': id_curve_data['qmia']['fpr_at_tpr_0.1'],
+            'qmia_tpr_at_fpr_1%': id_curve_data['qmia']['fpr_at_tpr_1'],
+            'baseline_auc': id_curve_data['baseline']['auc'],
+            'baseline_tpr_at_fpr_0.1%': id_curve_data['baseline']['fpr_at_tpr_0.1'],
+            'baseline_tpr_at_fpr_1%': id_curve_data['baseline']['fpr_at_tpr_1']
+        })
+
+    # Save stats to CSV
+    stats_df = pd.DataFrame(stats_data)
+    stats_csv_path = os.path.join(args.attack_results_path, "stats.csv")
+    stats_df.to_csv(stats_csv_path, index=False)
+    print(f"Statistics saved to {stats_csv_path}")
 
     if args.num_base_classes <= 10:
         test_preds_per_cls = []

@@ -28,7 +28,7 @@ conda activate qmiaenv
 
 ## Experiments
 
-### CIFAR-10 Class Dropout (Figure 3a)
+### CINIC-10 Class Dropout (Figure 3a)
 
 Run `test_dropout.sh` with the following variables:
 ```bash

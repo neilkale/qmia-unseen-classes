@@ -168,6 +168,14 @@ def argparser():
         help="save checkpoint every X steps, None to disable",
     )
 
+    # Differential Privacy parameters (for finding the correct base model directory)
+    parser.add_argument("--enable_dp", action="store_true", help="Base model was trained with differential privacy")
+    parser.add_argument("--dp_noise_multiplier", type=float, default=1.0, help="Noise multiplier used for base model DP-SGD")
+    parser.add_argument("--dp_max_grad_norm", type=float, default=1.0, help="Maximum gradient norm used for base model DP clipping")
+    parser.add_argument("--dp_target_epsilon", type=float, default=None, help="Target epsilon used for base model DP (if None, noise_multiplier was used)")
+    parser.add_argument("--dp_target_delta", type=float, default=1e-5, help="Target delta used for base model DP")
+    parser.add_argument("--dp_secure_rng", action="store_true", help="Cryptographically secure RNG was used for base model DP")
+
     args = parser.parse_args()
     seed = args.seed
     torch.manual_seed(seed)
@@ -195,11 +203,26 @@ def argparser():
     if args.cls_samples:
         cls_drop_str += f"_samples_{args.cls_samples}"
 
+    # Create DP suffix for base model directory naming (same logic as train_base.py)
+    dp_suffix = ""
+    if args.enable_dp:
+        dp_parts = []
+        if args.dp_target_epsilon is not None:
+            dp_parts.append(f"eps{args.dp_target_epsilon}")
+            if args.dp_target_delta != 1e-5:  # Only include delta if non-standard
+                dp_parts.append(f"delta{args.dp_target_delta}")
+        else:
+            dp_parts.append(f"noise{args.dp_noise_multiplier}")
+        dp_parts.append(f"clip{args.dp_max_grad_norm}")
+        if args.dp_secure_rng:
+            dp_parts.append("secure")
+        dp_suffix = "_dp_" + "_".join(dp_parts)
+
     args.attack_checkpoint_path = os.path.join(
         args.model_root,
         "mia",
         "base_" + args.base_model_dataset,
-        args.base_architecture,
+        args.base_architecture + dp_suffix,  # Include DP suffix in attack path too
         "attack_" + args.attack_dataset,
         args.architecture,
         "score_fn_" + args.score_fn,
@@ -211,7 +234,7 @@ def argparser():
         args.model_root,
         "base",
         args.base_model_dataset,
-        args.base_architecture
+        args.base_architecture + dp_suffix  # Include DP suffix to match train_base.py
     )
 
     if "cifar100" in args.base_model_dataset.lower():
@@ -220,6 +243,8 @@ def argparser():
         args.num_base_classes = 1000
     elif "cifar20" in args.base_model_dataset.lower():
         args.num_base_classes = 20
+    elif "purchase" in args.base_model_dataset.lower():
+        args.num_base_classes = 100
     else:
         args.num_base_classes = 10
 

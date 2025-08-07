@@ -68,6 +68,8 @@ class LightningBaseNet(pl.LightningModule):
         optimizer_params=None,
         loss_fn="cross_entropy",
         label_smoothing=0.0,
+        enable_dp=False,
+        dp_params=None,
     ):
         super().__init__()
 
@@ -79,16 +81,60 @@ class LightningBaseNet(pl.LightningModule):
             raise ValueError(f"Unknown loss function: {loss_fn}")
         self.optimizer_params = get_optimizer_params(optimizer_params)
 
+        # Differential Privacy setup
+        self.enable_dp = enable_dp
+        self.dp_params = dp_params or {}
+        self.privacy_engine = None
+        self.dp_enabled = False
+
         self.save_hyperparameters(
             "architecture",
             "num_classes",
             "base_image_size",
             "optimizer_params",
-            "loss_fn"
+            "loss_fn",
+            "enable_dp",
+            "dp_params"
         )
         self.model = get_model(architecture, num_classes, freeze_embedding=False)
 
         self.validation_step_outputs = []
+
+    def setup(self, stage: str):
+        """Setup hook called by Lightning. This is where we initialize Opacus if DP is enabled."""
+        if stage == "fit" and self.enable_dp and self.dp_params and not hasattr(self, '_opacus_setup_done'):
+            try:
+                from opacus import PrivacyEngine
+                
+                print("Setting up Opacus for differential privacy...")
+                
+                # Initialize privacy engine with RDP accountant to avoid PRV division by zero issues
+                self.privacy_engine = PrivacyEngine(
+                    accountant='rdp',  # Use RDP instead of default PRV to avoid division by zero
+                    secure_mode=self.dp_params.get('secure_rng', False)
+                )
+                
+                # Configure expanded alpha range for the accountant
+                # This fixes the "Optimal order is the largest alpha" warning
+                # Default range is too small for your dataset size/batch size combination
+                expanded_alphas = [1 + x / 10.0 for x in range(1, 100)] + list(range(12, 64))
+                
+                # Override the default alphas in the accountant
+                if hasattr(self.privacy_engine.accountant, 'alphas'):
+                    self.privacy_engine.accountant.alphas = expanded_alphas
+                    print(f"Set expanded alpha range: {len(expanded_alphas)} values from {min(expanded_alphas):.1f} to {max(expanded_alphas)}")
+                
+                # Mark setup as done to avoid duplicate setup
+                self._opacus_setup_done = True
+                
+                print("Opacus privacy engine initialized successfully with RDP accountant")
+                
+            except ImportError:
+                print("Warning: Opacus not available. Falling back to regular training.")
+                self.enable_dp = False
+            except Exception as e:
+                print(f"Warning: Failed to initialize Opacus: {e}. Falling back to regular training.")
+                self.enable_dp = False
 
     def forward(self, samples: torch.Tensor):
         logits = self.model(samples)
@@ -103,6 +149,15 @@ class LightningBaseNet(pl.LightningModule):
         self.log("ptl/loss", loss, on_epoch=True, prog_bar=True, on_step=False, sync_dist=True)
         self.log("ptl/acc1", acc1, on_epoch=True, prog_bar=True, on_step=False, sync_dist=True)
         self.log("ptl/acc5", acc5, on_epoch=True, prog_bar=True, on_step=False, sync_dist=True)
+
+        # Log differential privacy metrics if enabled
+        if hasattr(self, 'privacy_engine') and self.privacy_engine is not None:
+            try:
+                epsilon = self.privacy_engine.get_epsilon(self.dp_params.get('target_delta', 1e-5))
+                self.log("ptl/dp_epsilon", epsilon, on_epoch=True, prog_bar=True, on_step=False, sync_dist=True)
+            except Exception as e:
+                print(f"Warning: Could not compute epsilon: {e}")
+                pass  # In case privacy engine is not ready yet
 
         return {
             "loss": loss,
@@ -182,6 +237,75 @@ class LightningBaseNet(pl.LightningModule):
                 "name": None,
             },
         }
+    
+    def on_train_start(self):
+        """Called when training starts. This is where we make the model/optimizer private."""
+        if self.enable_dp and hasattr(self, 'privacy_engine') and not hasattr(self, '_opacus_made_private'):
+            try:
+                # Get the optimizer from the trainer
+                optimizer = self.trainer.optimizers[0]
+                
+                # Get the train dataloader
+                train_loader = self.trainer.train_dataloader
+                
+                # Debug information
+                dataset_size = len(train_loader.dataset)
+                batch_size = train_loader.batch_size
+                num_batches = len(train_loader)
+                epochs = self.dp_params['epochs']
+                total_steps = num_batches * epochs
+                
+                print(f"DP Debug Info:")
+                print(f"  Dataset size: {dataset_size}")
+                print(f"  Batch size: {batch_size}")
+                print(f"  Epochs: {epochs}, Total steps: {total_steps}")
+                print(f"  Target epsilon: {self.dp_params.get('target_epsilon')}")
+                print(f"  Target delta: {self.dp_params.get('target_delta')}")
+                print(f"  Max grad norm: {self.dp_params.get('max_grad_norm')}")
+                
+                if self.dp_params.get('target_epsilon') is not None:
+                    # Use target epsilon approach
+                    print("Setting up DP with target epsilon...")
+                    self.model, optimizer, train_loader = self.privacy_engine.make_private_with_epsilon(
+                        module=self.model,
+                        optimizer=optimizer,
+                        data_loader=train_loader,
+                        max_grad_norm=self.dp_params.get('max_grad_norm', 1.0),
+                        target_delta=self.dp_params.get('target_delta', 1e-5),
+                        target_epsilon=self.dp_params['target_epsilon'],
+                        epochs=self.dp_params['epochs'],
+                    )
+                    print(f"DP setup complete with target epsilon: {self.dp_params['target_epsilon']}")
+                else:
+                    # Use noise multiplier approach
+                    noise_multiplier = self.dp_params.get('noise_multiplier', 1.0)
+                    print(f"Setting up DP with noise multiplier: {noise_multiplier}")
+                    self.model, optimizer, train_loader = self.privacy_engine.make_private(
+                        module=self.model,
+                        optimizer=optimizer,
+                        data_loader=train_loader,
+                        noise_multiplier=noise_multiplier,
+                        max_grad_norm=self.dp_params.get('max_grad_norm', 1.0),
+                    )
+                    print(f"DP setup complete with noise multiplier: {noise_multiplier}")
+                
+                # Update trainer's optimizer
+                self.trainer.optimizers[0] = optimizer
+                
+                # Mark as done
+                self._opacus_made_private = True
+                self.dp_enabled = True
+                
+                # Log initial privacy budget
+                try:
+                    epsilon = self.privacy_engine.get_epsilon(self.dp_params.get('target_delta', 1e-5))
+                    print(f"Initial privacy budget - Epsilon: {epsilon:.2f}, Delta: {self.dp_params.get('target_delta', 1e-5)}")
+                except Exception as eps_error:
+                    print(f"Warning: Could not compute initial epsilon: {eps_error}")
+                
+            except Exception as e:
+                print(f"Warning: Failed to make model private: {e}. Falling back to regular training.")
+                self.enable_dp = False
 
 class LightningQMIA(pl.LightningModule):
     def __init__(
@@ -249,8 +373,6 @@ class LightningQMIA(pl.LightningModule):
         else:
             raise ValueError(f"Unknown score function: {score_fn}")
         
-        self.validation_step_outputs = []
-
     def forward(self, samples: torch.Tensor, targets: torch.LongTensor = None, target_logits: torch.Tensor = None):
         """
         Forward pass through the model
@@ -281,28 +403,21 @@ class LightningQMIA(pl.LightningModule):
         loss = self.loss_fn(pred_scores, target_scores).mean()
         acc1, acc5 = accuracy(logits, targets, topk=(1, 5))
 
+        # Log directly instead of accumulating
+        self.log("ptl/val_loss", loss, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("ptl/base_acc1", acc1, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("ptl/base_acc5", acc5, on_epoch=True, prog_bar=True, sync_dist=True)
+
         rets = {
             "val_loss": loss,
             "base_acc1": acc1,
             "base_acc5": acc5,
         }
-        self.validation_step_outputs.append(rets)
         return rets
     
     def on_validation_epoch_end(self):
-        avg_loss = torch.stack(
-            [x["val_loss"] for x in self.validation_step_outputs]
-        ).mean()
-        avg_acc1 = torch.stack(
-            [x["base_acc1"] for x in self.validation_step_outputs]
-        ).mean()
-        avg_acc5 = torch.stack(
-            [x["base_acc5"] for x in self.validation_step_outputs]
-        ).mean()
-        self.log("ptl/val_loss", avg_loss, prog_bar=True, sync_dist=True)
-        self.log("ptl/base_acc1", avg_acc1, prog_bar=True, sync_dist=True)
-        self.log("ptl/base_acc5", avg_acc5, prog_bar=True, sync_dist=True)
-        self.validation_step_outputs.clear()
+        # Lightning handles averaging automatically
+        pass
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
         samples, targets, base_samples = get_batch(batch)

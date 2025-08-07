@@ -3,3 +3,6 @@
 /__pycache__/*
 /lightning_logs/*
 /.venv/*
+*.log
+/tabular/logs/*
+/tabular/models/*

@@ -141,6 +141,179 @@ def ResNet152(**kwargs):
     return ResNet(Bottleneck, [3, 8, 36, 3], **kwargs)
 
 
+# Helper function for all DP models
+def _get_optimal_groups(channels, base_groups=8, strategy="small_groups"):
+    """Get optimal number of groups for GroupNorm based on channel count."""
+    
+    if strategy == "individual":
+        # Individual channel normalization (closest to BatchNorm)
+        # Each channel gets its own normalization
+        return channels
+    
+    elif strategy == "small_groups":
+        # Target 2-4 channels per group for good normalization with some cross-channel interaction
+        if channels <= 4:
+            return channels
+        elif channels <= 8:
+            return channels // 2
+        else:
+            # Target ~4 channels per group
+            target_groups = channels // 4
+            for groups in range(target_groups, 0, -1):
+                if channels % groups == 0:
+                    return groups
+            return 1
+    
+    elif strategy == "fixed_8":
+        # Fixed 8 groups (original approach)
+        for groups in range(min(8, channels), 0, -1):
+            if channels % groups == 0:
+                return groups
+        return 1
+    
+    else:
+        # Default: individual channel normalization
+        return channels
+
+
+# DP-compatible versions using GroupNorm instead of BatchNorm
+class BasicBlockDP(nn.Module):
+    expansion = 1
+
+    def __init__(self, in_planes, planes, stride=1, num_groups=8):
+        super(BasicBlockDP, self).__init__()
+        
+        self.conv1 = nn.Conv2d(
+            in_planes, planes, kernel_size=3, stride=stride, padding=1, bias=False
+        )
+        self.gn1 = nn.GroupNorm(_get_optimal_groups(planes, num_groups), planes)
+        self.conv2 = nn.Conv2d(
+            planes, planes, kernel_size=3, stride=1, padding=1, bias=False
+        )
+        self.gn2 = nn.GroupNorm(_get_optimal_groups(planes, num_groups), planes)
+
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_planes != self.expansion * planes:
+            expansion_channels = self.expansion * planes
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(
+                    in_planes,
+                    expansion_channels,
+                    kernel_size=1,
+                    stride=stride,
+                    bias=False,
+                ),
+                nn.GroupNorm(_get_optimal_groups(expansion_channels, num_groups), expansion_channels),
+            )
+
+    def forward(self, x):
+        out = F.relu(self.gn1(self.conv1(x)))
+        out = self.gn2(self.conv2(out))
+        out = out + self.shortcut(x)  # Changed from += to + to avoid in-place modification
+        out = F.relu(out)
+        return out
+
+
+class BottleneckDP(nn.Module):
+    expansion = 4
+
+    def __init__(self, in_planes, planes, stride=1, num_groups=8):
+        super(BottleneckDP, self).__init__()
+        
+        self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=1, bias=False)
+        self.gn1 = nn.GroupNorm(_get_optimal_groups(planes, num_groups), planes)
+        
+        self.conv2 = nn.Conv2d(
+            planes, planes, kernel_size=3, stride=stride, padding=1, bias=False
+        )
+        self.gn2 = nn.GroupNorm(_get_optimal_groups(planes, num_groups), planes)
+        
+        self.conv3 = nn.Conv2d(
+            planes, self.expansion * planes, kernel_size=1, bias=False
+        )
+        expansion_channels = self.expansion * planes
+        self.gn3 = nn.GroupNorm(_get_optimal_groups(expansion_channels, num_groups), expansion_channels)
+
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_planes != self.expansion * planes:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(
+                    in_planes,
+                    self.expansion * planes,
+                    kernel_size=1,
+                    stride=stride,
+                    bias=False,
+                ),
+                nn.GroupNorm(_get_optimal_groups(expansion_channels, num_groups), expansion_channels),
+            )
+
+    def forward(self, x):
+        out = F.relu(self.gn1(self.conv1(x)))
+        out = F.relu(self.gn2(self.conv2(out)))
+        out = self.gn3(self.conv3(out))
+        out = out + self.shortcut(x)  # Changed from += to + to avoid in-place modification
+        out = F.relu(out)
+        return out
+
+
+class ResNetDP(nn.Module):
+    def __init__(self, block, num_blocks, num_classes=10, num_groups=8):
+        super(ResNetDP, self).__init__()
+        self.in_planes = 64
+        self.num_groups = num_groups
+
+        self.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
+        self.gn1 = nn.GroupNorm(_get_optimal_groups(64, num_groups), 64)
+        self.layer1 = self._make_layer(block, 64, num_blocks[0], stride=1)
+        self.layer2 = self._make_layer(block, 128, num_blocks[1], stride=2)
+        self.layer3 = self._make_layer(block, 256, num_blocks[2], stride=2)
+        self.layer4 = self._make_layer(block, 512, num_blocks[3], stride=2)
+        self.linear = nn.Linear(512 * block.expansion, num_classes)
+
+    def _make_layer(self, block, planes, num_blocks, stride):
+        strides = [stride] + [1] * (num_blocks - 1)
+        layers = []
+        for stride in strides:
+            layers.append(block(self.in_planes, planes, stride, self.num_groups))
+            self.in_planes = planes * block.expansion
+        return nn.Sequential(*layers)
+
+    def forward(self, x):
+        out = F.relu(self.gn1(self.conv1(x)))
+        out = self.layer1(out)
+        out = self.layer2(out)
+        out = self.layer3(out)
+        out = self.layer4(out)
+        out = F.avg_pool2d(out, 4)
+        out = out.view(out.size(0), -1)
+        out = self.linear(out)
+        return out
+
+
+def ResNet10DP(**kwargs):
+    return ResNetDP(BasicBlockDP, [1, 1, 1, 1], **kwargs)
+
+
+def ResNet18DP(**kwargs):
+    return ResNetDP(BasicBlockDP, [2, 2, 2, 2], **kwargs)
+
+
+def ResNet34DP(**kwargs):
+    return ResNetDP(BasicBlockDP, [3, 4, 6, 3], **kwargs)
+
+
+def ResNet50DP(**kwargs):
+    return ResNetDP(BottleneckDP, [3, 4, 6, 3], **kwargs)
+
+
+def ResNet101DP(**kwargs):
+    return ResNetDP(BottleneckDP, [3, 4, 23, 3], **kwargs)
+
+
+def ResNet152DP(**kwargs):
+    return ResNetDP(BottleneckDP, [3, 8, 36, 3], **kwargs)
+
+
 class ResNetExtraInputs(nn.Module):
     def __init__(
         self, block, num_blocks, num_classes=10, hidden_dims=[], extra_inputs=None
@@ -242,12 +415,21 @@ class WRNBlock(nn.Module):
         else:
             self.proj_conv = None
 
-        self.norm_1 = bn(nin, eps=BN_EPS, momentum=BN_MOM)
+        # Handle different normalization layer parameters
+        # Check if it's BatchNorm (which takes eps and momentum) or other norm layers
+        if 'BatchNorm' in str(bn):
+            # BatchNorm or other normalization that accepts eps and momentum
+            self.norm_1 = bn(nin, eps=BN_EPS, momentum=BN_MOM)
+            self.norm_2 = bn(nout, eps=BN_EPS, momentum=BN_MOM)
+        else:
+            # GroupNorm or other normalization that doesn't take eps/momentum
+            self.norm_1 = bn(nin)
+            self.norm_2 = bn(nout)
+            
         # self.conv_1 = objax.nn.Conv2D(nin, nout, 3, strides=stride, **conv_args(3, nout))
         self.conv_1 = nn.Conv2d(
             nin, nout, kernel_size=3, stride=stride, bias=False, padding=1
         )
-        self.norm_2 = bn(nout, eps=BN_EPS, momentum=BN_MOM)
         # self.conv_2 = objax.nn.Conv2D(nout, nout, 3, strides=1, **conv_args(3, nout))
         self.conv_2 = nn.Conv2d(
             nout, nout, kernel_size=3, stride=1, bias=False, padding=1
@@ -297,7 +479,8 @@ class WideResNetGeneral(nn.Module):
                 ops.append(WRNBlock(width, width, 1, bn))
             n = width
         ops += [
-            bn(n, eps=BN_EPS, momentum=BN_MOM),
+            # Handle the final normalization layer - GroupNorm doesn't take eps/momentum
+            bn(n, eps=BN_EPS, momentum=BN_MOM) if 'BatchNorm' in str(bn) else bn(n),
             # objax.functional.relu,
             nn.ReLU(),
             # self.mean_reduce,
@@ -342,3 +525,88 @@ class WideResNet(WideResNetGeneral):
         n = (depth - 4) // 6
         blocks_per_group = [n] * 3
         super().__init__(nin, num_classes, blocks_per_group, width, bn)
+
+
+class BottleneckNoNorm(nn.Module):
+    expansion = 4
+
+    def __init__(self, in_planes, planes, stride=1):
+        super(BottleneckNoNorm, self).__init__()
+        
+        self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=1, bias=True)  # Enable bias since no norm
+        self.conv2 = nn.Conv2d(
+            planes, planes, kernel_size=3, stride=stride, padding=1, bias=True
+        )
+        self.conv3 = nn.Conv2d(
+            planes, self.expansion * planes, kernel_size=1, bias=True
+        )
+
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_planes != self.expansion * planes:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(
+                    in_planes,
+                    self.expansion * planes,
+                    kernel_size=1,
+                    stride=stride,
+                    bias=True,
+                ),
+            )
+
+    def forward(self, x):
+        out = F.relu(self.conv1(x))
+        out = F.relu(self.conv2(out))
+        out = self.conv3(out)
+        out = out + self.shortcut(x)
+        out = F.relu(out)
+        return out
+
+
+class ResNetNoNorm(nn.Module):
+    def __init__(self, block, num_blocks, num_classes=10):
+        super(ResNetNoNorm, self).__init__()
+        self.in_planes = 64
+
+        self.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=True)
+        self.layer1 = self._make_layer(block, 64, num_blocks[0], stride=1)
+        self.layer2 = self._make_layer(block, 128, num_blocks[1], stride=2)
+        self.layer3 = self._make_layer(block, 256, num_blocks[2], stride=2)
+        self.layer4 = self._make_layer(block, 512, num_blocks[3], stride=2)
+        self.linear = nn.Linear(512 * block.expansion, num_classes)
+        
+        # Apply careful initialization for networks without normalization
+        self._initialize_weights()
+
+    def _make_layer(self, block, planes, num_blocks, stride):
+        strides = [stride] + [1] * (num_blocks - 1)
+        layers = []
+        for stride in strides:
+            layers.append(block(self.in_planes, planes, stride))
+            self.in_planes = planes * block.expansion
+        return nn.Sequential(*layers)
+        
+    def _initialize_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                # Use He initialization with fan_out mode for ReLU networks
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                nn.init.constant_(m.bias, 0)
+
+    def forward(self, x):
+        out = F.relu(self.conv1(x))
+        out = self.layer1(out)
+        out = self.layer2(out)
+        out = self.layer3(out)
+        out = self.layer4(out)
+        out = F.avg_pool2d(out, 4)
+        out = out.view(out.size(0), -1)
+        out = self.linear(out)
+        return out
+
+
+def ResNet50NoNorm(**kwargs):
+    return ResNetNoNorm(BottleneckNoNorm, [3, 4, 6, 3], **kwargs)
