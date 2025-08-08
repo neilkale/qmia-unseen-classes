@@ -4,9 +4,9 @@ DATA_DIR=./data/
 ## Fixed DP parameters ##
 DP_ENABLE="--enable_dp"
 DP_MAX_GRAD_NORM="--dp_max_grad_norm 1.0"
-DP_TARGET_EPSILON="--dp_target_epsilon 16.0"
-DP_TARGET_DELTA="--dp_target_delta 8e-5"
-DP_NOISE_MULTIPLIER="--dp_noise_multiplier 1.0"
+DP_TARGET_EPSILON="--dp_target_epsilon 0.5"
+DP_TARGET_DELTA="--dp_target_delta 1e-10"
+DP_NOISE_MULTIPLIER="--dp_noise_multiplier -1"
 ###########################
 
 ### Set these variables ###
@@ -16,11 +16,17 @@ BASE_DATASET=cifar20/0_16
 ATTACK_DATASET=cifar20/0_16
 ###########################
 
+export CUDA_VISIBLE_DEVICES=2
+
+# Optional secure RNG flag for DP (uncomment to enable)
+# DP_SECURE_RNG="--dp_secure_rng"
+DP_SECURE_RNG=""
+
 # Train base model
 echo "Training base model with architecture: $BASE_ARCHITECTURE" >> dropout_multisetting_tracker.log
 python train_base.py --dataset=$BASE_DATASET --architecture=$BASE_ARCHITECTURE --model_root=$MODEL_DIR --data_root=$DATA_DIR \
---batch_size=32 --scheduler=step --scheduler_step_gamma=0.2 --scheduler_step_fraction=0.3 --lr=0.05 --weight_decay=5e-4 --epochs=100 \
-$DP_ENABLE $DP_NOISE_MULTIPLIER $DP_MAX_GRAD_NORM $DP_TARGET_EPSILON $DP_TARGET_DELTA $DP_SECURE_RNG
+--batch_size=32 --lr=0.05 --weight_decay=5e-4 --epochs=100 --optimizer=sgd \
+$DP_ENABLE $DP_NOISE_MULTIPLIER $DP_MAX_GRAD_NORM $DP_TARGET_EPSILON $DP_TARGET_DELTA $DP_SECURE_RNG 
 
 DROPPED_CLASS_SETTINGS=("0" "1" "2" "3" "4" "5" "6" "7" "8" "9" "0 1" "2 3" "4 5" "6 7" "8 9" "0 1 2 3 4" "5 6 7 8 9" "0 1 2 3 4 5 6 7 8 9" "10 11 12 13 14 15 16 17 18 19")
 

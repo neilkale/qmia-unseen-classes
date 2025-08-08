@@ -325,7 +325,11 @@ def evaluate_mia(args, rerun=False):
     lightning_model = LightningQMIA.load_from_checkpoint(os.path.join(
         args.attack_checkpoint_path,
         f"{args.checkpoint}.ckpt"
-    ))
+    ),
+        # Critical: ensure we use the intended base model for this evaluation run
+        base_model_dir=args.base_checkpoint_path,
+        num_classes=args.num_base_classes,
+    )
     lightning_model.eval()
 
     datamodule = CustomDataModule(

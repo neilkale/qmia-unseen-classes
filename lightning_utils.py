@@ -188,6 +188,61 @@ class LightningBaseNet(pl.LightningModule):
         # Lightning handles averaging automatically
         pass
 
+    def on_train_epoch_end(self):
+        if hasattr(self, 'privacy_engine') and self.privacy_engine is not None and self.enable_dp:
+            try:
+                delta = self.dp_params.get('target_delta', 1e-5)
+                epsilon = self.privacy_engine.get_epsilon(delta)
+                # If epsilon is suspiciously zero, try a fallback computation via RDPAccountant
+                if isinstance(epsilon, (int, float)) and float(epsilon) == 0.0:
+                    print("Warning: Epsilon is suspiciously zero. Fallback computation removed for now...")
+                    # try:
+                    #     from opacus.accountants import RDPAccountant
+                    #     # Infer steps so far and sample rate
+                    #     if hasattr(self.trainer, 'datamodule') and self.trainer.datamodule is not None:
+                    #         dl = self.trainer.datamodule.train_dataloader()
+                    #     else:
+                    #         dl_fn = getattr(self.trainer, 'train_dataloader', None)
+                    #         dl = dl_fn() if callable(dl_fn) else dl_fn
+                    #     dataset_size = len(dl.dataset)
+                    #     # Try to infer batch size from multiple sources
+                    #     opt = self.trainer.optimizers[0]
+                    #     batch_size = getattr(opt, 'expected_batch_size', None)
+                    #     if batch_size is None:
+                    #         batch_size = getattr(dl, 'batch_size', None)
+                    #     if batch_size is None:
+                    #         try:
+                    #             first_batch = next(iter(dl))
+                    #             # first element is samples tensor
+                    #             if isinstance(first_batch, (list, tuple)) and len(first_batch) > 0:
+                    #                 bs_tensor = first_batch[0]
+                    #                 batch_size = getattr(bs_tensor, 'shape', [None])[0]
+                    #         except Exception:
+                    #             pass
+                    #     if batch_size is None:
+                    #         raise RuntimeError('Could not infer batch size for fallback epsilon computation')
+                    #     steps_per_epoch = len(dl)
+                    #     total_steps = steps_per_epoch * (self.current_epoch + 1)
+                    #     sample_rate = batch_size / float(dataset_size)
+                    #     # Try to get noise multiplier
+                    #     sigma = getattr(self.privacy_engine, 'noise_multiplier', None)
+                    #     if sigma is None:
+                    #         sigma = getattr(opt, 'noise_multiplier', None)
+                    #     if sigma is None:
+                    #         sigma = self.dp_params.get('noise_multiplier', None)
+                    #     if sigma is None:
+                    #         raise RuntimeError('Could not infer noise multiplier for fallback epsilon computation')
+                    #     accountant = RDPAccountant()
+                    #     for _ in range(total_steps):
+                    #         accountant.step(noise_multiplier=sigma, sample_rate=sample_rate)
+                    #     epsilon = accountant.get_epsilon(delta=delta)
+                    # except Exception as fb_err:
+                    #     print(f"Warning: Fallback RDP epsilon computation failed: {fb_err}")
+                print(f"DP epsilon after epoch {self.current_epoch + 1}: {float(epsilon):.6f}")
+                self.log("ptl/dp_epsilon_epoch", float(epsilon), on_epoch=True, prog_bar=False, on_step=False, sync_dist=True)
+            except Exception as e:
+                print(f"Warning: Could not compute epsilon at epoch end: {e}")
+
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
         samples, targets, base_samples = get_batch(batch)
         logits = self.forward(base_samples)
@@ -211,32 +266,19 @@ class LightningBaseNet(pl.LightningModule):
             step_gamma=self.optimizer_params["step_gamma"],
             lr=self.optimizer_params["lr"],
         )
-
-        return {
+        opt_and_scheduler_config = {
             "optimizer": optimizer,
-            "lr_scheduler": {
-                # REQUIRED: The scheduler instance
-                "scheduler": lr_scheduler,
-                # The unit of the scheduler's step size, could also be 'step'.
-                # 'epoch' updates the scheduler on epoch end whereas 'step'
-                # updates it after a optimizer update.
-                "interval": interval,
-                # How many epochs/steps should pass between calls to
-                # `scheduler.step()`. 1 corresponds to updating the learning
-                # rate after every epoch/step.
-                "frequency": 1,
-                # Metric to to monitor for schedulers like `ReduceLROnPlateau`
-                "monitor": "ptl/val_acc1",
-                # If set to `True`, will enforce that the value specified 'monitor'
-                # is available when the scheduler is updated, thus stopping
-                # training if not found. If set to `False`, it will only produce a warning
-                "strict": True,
-                # If using the `LearningRateMonitor` callback to monitor the
-                # learning rate progress, this keyword can be used to specify
-                # a custom logged name
-                "name": None,
-            },
         }
+        if lr_scheduler is not None:
+            opt_and_scheduler_config["lr_scheduler"] = {
+                "scheduler": lr_scheduler,
+                "interval": interval,
+                "frequency": 1,
+                "monitor": "ptl/val_acc1",
+                "strict": True,
+                "name": None,
+            }
+        return opt_and_scheduler_config
     
     def on_train_start(self):
         """Called when training starts. This is where we make the model/optimizer private."""
@@ -245,8 +287,24 @@ class LightningBaseNet(pl.LightningModule):
                 # Get the optimizer from the trainer
                 optimizer = self.trainer.optimizers[0]
                 
-                # Get the train dataloader
-                train_loader = self.trainer.train_dataloader
+                # Get the train dataloader (ensure it's a DataLoader instance)
+                train_loader = None
+                if hasattr(self.trainer, 'datamodule') and self.trainer.datamodule is not None:
+                    try:
+                        train_loader = self.trainer.datamodule.train_dataloader()
+                    except Exception:
+                        train_loader = None
+                if train_loader is None:
+                    candidate = getattr(self.trainer, 'train_dataloader', None)
+                    if callable(candidate):
+                        try:
+                            train_loader = candidate()
+                        except Exception:
+                            train_loader = None
+                    else:
+                        train_loader = candidate
+                if train_loader is None:
+                    raise RuntimeError('Could not obtain training DataLoader for DP wrapping')
                 
                 # Debug information
                 dataset_size = len(train_loader.dataset)
@@ -270,8 +328,8 @@ class LightningBaseNet(pl.LightningModule):
                         module=self.model,
                         optimizer=optimizer,
                         data_loader=train_loader,
-                        max_grad_norm=self.dp_params.get('max_grad_norm', 1.0),
-                        target_delta=self.dp_params.get('target_delta', 1e-5),
+                        max_grad_norm=self.dp_params.get('max_grad_norm', None),
+                        target_delta=self.dp_params.get('target_delta', None),
                         target_epsilon=self.dp_params['target_epsilon'],
                         epochs=self.dp_params['epochs'],
                     )
@@ -285,12 +343,34 @@ class LightningBaseNet(pl.LightningModule):
                         optimizer=optimizer,
                         data_loader=train_loader,
                         noise_multiplier=noise_multiplier,
-                        max_grad_norm=self.dp_params.get('max_grad_norm', 1.0),
+                        max_grad_norm=self.dp_params.get('max_grad_norm', None),
                     )
                     print(f"DP setup complete with noise multiplier: {noise_multiplier}")
                 
                 # Update trainer's optimizer
                 self.trainer.optimizers[0] = optimizer
+
+                # Ensure Trainer uses the Opacus-wrapped DP DataLoader
+                try:
+                    if hasattr(self.trainer, 'datamodule') and self.trainer.datamodule is not None:
+                        # Override datamodule's train_dataloader to return the DP loader
+                        original_fn = getattr(self.trainer.datamodule, 'train_dataloader', None)
+                        if callable(original_fn):
+                            print("Replacing train_dataloader with Opacus DP loader...")
+                            self.trainer.datamodule.train_dataloader = (lambda dl=train_loader: (lambda: dl))()
+                        # Ask Lightning to rebuild internal dataloader state
+                        if hasattr(self.trainer, 'reset_train_dataloader'):
+                            self.trainer.reset_train_dataloader()
+                    else:
+                        # Fallback: set on trainer if possible (may be Lightning-version dependent)
+                        if hasattr(self.trainer, 'train_dataloader'):
+                            print("Warning: No datamodule found. Attempting to set trainer.train_dataloader directly.")
+                            try:
+                                self.trainer.train_dataloader = train_loader  # type: ignore[attr-defined]
+                            except Exception:
+                                pass
+                except Exception as dl_set_err:
+                    print(f"Warning: Failed to swap in DP DataLoader: {dl_set_err}")
                 
                 # Mark as done
                 self._opacus_made_private = True

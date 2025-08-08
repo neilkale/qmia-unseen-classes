@@ -173,7 +173,7 @@ def train_model(config, args, callbacks=None, rerun=False):
     
     datamodule = CustomDataModule(
         dataset_name=args.dataset,
-        num_workers=32,
+        num_workers=32 if not args.DEBUG or args.enable_dp else 0,
         image_size=args.image_size,
         base_image_size=args.base_image_size,
         batch_size=args.batch_size,
@@ -236,7 +236,7 @@ def train_model(config, args, callbacks=None, rerun=False):
         max_epochs=config["epochs"] if not args.DEBUG else 1,
         accelerator="gpu" if not args.DEBUG else "cpu", 
         callbacks=callbacks,
-        devices=-1 if not args.DEBUG else 1,
+        devices=-1 if not args.DEBUG or args.enable_dp else 1,
         default_root_dir=checkpoint_dir,
         strategy='ddp' if not args.DEBUG else 'ddp',
         gradient_clip_val=config["gradient_clip_val"] if not args.enable_dp else None,  # Disable Lightning's gradient clipping when using DP

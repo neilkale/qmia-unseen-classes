@@ -4,7 +4,7 @@ DATA_DIR=./data/
 ## Fixed DP parameters ##
 DP_ENABLE="--enable_dp"
 DP_MAX_GRAD_NORM="--dp_max_grad_norm 1.0"
-DP_TARGET_EPSILON="--dp_target_epsilon 8.0"
+DP_TARGET_EPSILON="--dp_target_epsilon 1.0"
 DP_TARGET_DELTA="--dp_target_delta 8e-5"
 DP_NOISE_MULTIPLIER="--dp_noise_multiplier 1.0"
 ###########################
@@ -15,6 +15,10 @@ QMIA_ARCHITECTURE=facebook/convnext-tiny-224
 BASE_DATASET=cifar20/0_16
 ATTACK_DATASET=cifar20/0_16
 ###########################
+
+# Optional secure RNG flag for DP (uncomment to enable)
+# DP_SECURE_RNG="--dp_secure_rng"
+DP_SECURE_RNG=""
 
 # Train base model
 echo "Training base model with architecture: $BASE_ARCHITECTURE" >> dropout_multisetting_tracker.log

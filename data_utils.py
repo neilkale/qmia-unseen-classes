@@ -885,7 +885,7 @@ def get_data(
         with temp_seed(DATASET_FLAGS.DATA_SEED):
             indices = np.random.permutation(len(full_dataset))
 
-            th_indices = int(len(indices * split_frac))
+            th_indices = int(len(indices) * split_frac)
             indices_a = indices[:th_indices]
             indices_b = indices[th_indices:]
 
