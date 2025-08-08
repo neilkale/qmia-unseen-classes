@@ -1,5 +1,7 @@
 import torch
 
+from cosine_annealing_warmup import CosineAnnealingWarmupRestarts
+
 def build_scheduler(
     scheduler,
     epochs,
@@ -18,8 +20,13 @@ def build_scheduler(
             optimizer, T_max=epochs
         )
     elif scheduler == "cosine_warmup":
-        lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-            optimizer, T_0=int(epochs/10)
+        lr_scheduler = CosineAnnealingWarmupRestarts(
+            optimizer,
+            first_cycle_steps=50,
+            cycle_mult=1.0,
+            max_lr=lr,
+            min_lr=0,
+            warmup_steps=10
         )
     elif scheduler == "linear":
         lr_scheduler = torch.optim.lr_scheduler.LinearLR(

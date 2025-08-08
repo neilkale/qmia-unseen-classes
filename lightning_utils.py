@@ -87,6 +87,8 @@ class LightningBaseNet(pl.LightningModule):
         self.privacy_engine = None
         self.dp_enabled = False
 
+        self.automatic_optimization = False # for some reason doesn't call DP steps otherwise.
+        
         self.save_hyperparameters(
             "architecture",
             "num_classes",
@@ -105,6 +107,8 @@ class LightningBaseNet(pl.LightningModule):
         if stage == "fit" and self.enable_dp and self.dp_params and not hasattr(self, '_opacus_setup_done'):
             try:
                 from opacus import PrivacyEngine
+                import opacus
+                print(opacus.__path__)
                 
                 print("Setting up Opacus for differential privacy...")
                 
@@ -146,6 +150,13 @@ class LightningBaseNet(pl.LightningModule):
         loss = self.loss_fn(logits, targets).mean()
         acc1, acc5 = accuracy(logits, targets, topk=(1, 5))
 
+        optimizer = self.trainer.optimizers[0]
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+#        sched = self.lr_schedulers()
+#        lr_scheduler.step()
+
         self.log("ptl/loss", loss, on_epoch=True, prog_bar=True, on_step=False, sync_dist=True)
         self.log("ptl/acc1", acc1, on_epoch=True, prog_bar=True, on_step=False, sync_dist=True)
         self.log("ptl/acc5", acc5, on_epoch=True, prog_bar=True, on_step=False, sync_dist=True)
@@ -156,7 +167,7 @@ class LightningBaseNet(pl.LightningModule):
                 epsilon = self.privacy_engine.get_epsilon(self.dp_params.get('target_delta', 1e-5))
                 self.log("ptl/dp_epsilon", epsilon, on_epoch=True, prog_bar=True, on_step=False, sync_dist=True)
             except Exception as e:
-                print(f"Warning: Could not compute epsilon: {e}")
+                #print(f"Warning: Could not compute epsilon: {e}")
                 pass  # In case privacy engine is not ready yet
 
         return {
@@ -332,6 +343,7 @@ class LightningBaseNet(pl.LightningModule):
                         target_delta=self.dp_params.get('target_delta', None),
                         target_epsilon=self.dp_params['target_epsilon'],
                         epochs=self.dp_params['epochs'],
+                        poisson_sampling=True
                     )
                     print(f"DP setup complete with target epsilon: {self.dp_params['target_epsilon']}")
                 else:
@@ -379,7 +391,7 @@ class LightningBaseNet(pl.LightningModule):
                 # Log initial privacy budget
                 try:
                     epsilon = self.privacy_engine.get_epsilon(self.dp_params.get('target_delta', 1e-5))
-                    print(f"Initial privacy budget - Epsilon: {epsilon:.2f}, Delta: {self.dp_params.get('target_delta', 1e-5)}")
+                    print(f"Initial privacy budget - Epsilon: {epsilon:.6f}, Delta: {self.dp_params.get('target_delta', 1e-5)}")
                 except Exception as eps_error:
                     print(f"Warning: Could not compute initial epsilon: {eps_error}")
                 
