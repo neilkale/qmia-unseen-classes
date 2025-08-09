@@ -25,5 +25,5 @@ DP_SECURE_RNG=""
 # Train base model
 echo "Training base model with architecture: $BASE_ARCHITECTURE" >> dropout_multisetting_tracker.log
 python train_base.py --dataset=$BASE_DATASET --architecture=$BASE_ARCHITECTURE --model_root=$MODEL_DIR --data_root=$DATA_DIR \
---batch_size=64 --lr=1e-4 --weight_decay=5e-4 --epochs=40 --optimizer=adamw \
+--batch_size=64 --lr=1e-4 --weight_decay=5e-4 --epochs=40 --optimizer=adamw --rerun \
 $DP_ENABLE $DP_NOISE_MULTIPLIER $DP_MAX_GRAD_NORM $DP_TARGET_EPSILON $DP_TARGET_DELTA $DP_SECURE_RNG 

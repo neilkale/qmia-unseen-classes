@@ -160,6 +160,7 @@ def train_model(config, args, callbacks=None, rerun=False):
     callbacks = callbacks or []
     save_handle = "model.pickle"
     checkpoint_path = os.path.join(args.base_checkpoint_path, save_handle)
+    print('Checkpoint path:', checkpoint_path)
     checkpoint_dir = os.path.dirname(checkpoint_path)
 
     if (
@@ -239,7 +240,7 @@ def train_model(config, args, callbacks=None, rerun=False):
         devices=-1 if not args.DEBUG or args.enable_dp else 1,
         default_root_dir=checkpoint_dir,
         strategy='ddp' if not args.DEBUG else 'ddp',
-        gradient_clip_val=config["gradient_clip_val"] if not args.enable_dp else None,  # Disable Lightning's gradient clipping when using DP
+        gradient_clip_val=config["gradient_clip_val"] if not args.enable_dp else None,  # Disable Lightning's gradient clipping when using DPx
         log_every_n_steps=10,
     )
 
@@ -284,7 +285,7 @@ def train_model(config, args, callbacks=None, rerun=False):
             else:
                 # Re-raise if it's a different error
                 raise e
-        
+            
         torch.save(lightning_model.model.state_dict(), checkpoint_path)
         print(
             "saved model from {} to {} ".format(

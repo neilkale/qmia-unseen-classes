@@ -194,6 +194,27 @@ class LightningBaseNet(pl.LightningModule):
             "val_acc5": acc5,
         }
         return rets
+
+    def on_validation_end(self) -> None:
+        if not self.automatic_optimization:
+            # Save a checkpoint of the model
+            ckpt_dir_path = os.path.join(self.trainer.log_dir, 'checkpoints')
+            os.makedirs(ckpt_dir_path, exist_ok=True)
+        
+            ckpt_path = os.path.join(self.trainer.log_dir, 'checkpoints', 'ckpt.pt')
+            
+            # Create a new state dict with fixed keys (remove _module prefix)
+            fixed_state_dict = {}
+            for key, value in self.model.state_dict().items():
+                if key.startswith('model._module.'):
+                    # Remove the _module prefix
+                    new_key = key.replace('model._module.', 'model.')
+                    fixed_state_dict[new_key] = value
+                else:
+                    fixed_state_dict[key] = value
+                    
+            torch.save(fixed_state_dict, ckpt_path)
+        return super().on_validation_end()
     
     def on_validation_epoch_end(self):
         # Lightning handles averaging automatically
