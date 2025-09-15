@@ -220,6 +220,10 @@ def argparser():
         args.num_base_classes = 1000
     elif "cifar20" in args.base_model_dataset.lower():
         args.num_base_classes = 20
+    elif "purchase" in args.base_model_dataset.lower():
+        args.num_base_classes = 100
+    elif "texas" in args.base_model_dataset.lower():
+        args.num_base_classes = 100
     else:
         args.num_base_classes = 10
 

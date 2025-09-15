@@ -141,6 +141,8 @@ def argparser():
         args.num_base_classes = 20
     elif "purchase" in args.dataset.lower():
         args.num_base_classes = 100
+    elif "texas" in args.dataset.lower():
+        args.num_base_classes = 100
     else:
         args.num_base_classes = 10
 

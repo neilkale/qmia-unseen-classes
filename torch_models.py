@@ -291,14 +291,17 @@ def get_fresh_tabular_mlp_model(
     Creates a tabular MLP model for structured data.
     
     Supports both predefined architectures and custom layer specifications:
-    - tabular-purchase-mlp: [512, 256, 128, 64]
-    - tabular-purchase-mlp-small: [64, 64] 
-    - tabular-purchase-mlp-large: [2048, 1024, 512, 256, 128]
-    - tabular-purchase-mlp-{dim1}_{dim2}_...: Custom layer dimensions
+    - tabular-purchase-mlp: [512, 256, 128, 64] (600 input features)
+    - tabular-purchase-mlp-small: [64, 64] (600 input features)
+    - tabular-purchase-mlp-large: [2048, 1024, 512, 256, 128] (600 input features)
+    - tabular-texas-mlp: [512, 256, 128, 64] (3084 input features)
+    - tabular-texas-mlp-large: [2048, 1024, 512, 256, 128] (3084 input features)
+    - tabular-purchase-mlp-{dim1}_{dim2}_...: Custom layer dimensions (600 input features)
+    - tabular-texas-mlp-{dim1}_{dim2}_...: Custom layer dimensions (3084 input features)
     
     Examples:
-    - tabular-purchase-mlp-256_128: [256, 128]
-    - tabular-purchase-mlp-512_512_256: [512, 512, 256]
+    - tabular-purchase-mlp-256_128: [256, 128] (600 input features)
+    - tabular-texas-mlp-512_512_256: [512, 512, 256] (3084 input features)
     """
     
     if architecture == "tabular-purchase-mlp":
@@ -322,12 +325,32 @@ def get_fresh_tabular_mlp_model(
     elif architecture == "tabular-purchase-mlp-xxlarge":
         input_dim = 600
         layer_dims = [4096, 4096, 2048, 2048, 1024, 512]
+    elif architecture == "tabular-texas-mlp":
+        input_dim = 3084
+        layer_dims = [512, 256, 128, 64]
+    elif architecture == "tabular-texas-mlp-large":
+        input_dim = 3084
+        layer_dims = [2048, 1024, 512, 256, 128]
+    elif architecture == "tabular-texas-mlp-largedeep":
+        input_dim = 3084
+        layer_dims = [1024, 768, 768, 512, 512, 384, 384, 256, 128]
     elif architecture.startswith("tabular-purchase-mlp-") and "_" in architecture:
         # Parse custom layer dimensions from architecture name
         # e.g., "tabular-purchase-mlp-128_128" -> [128, 128]
         input_dim = 600
         try:
             dims_str = architecture.replace("tabular-purchase-mlp-", "")
+            layer_dims = [int(dim) for dim in dims_str.split("_")]
+            if not layer_dims:
+                raise ValueError("No layer dimensions specified")
+        except ValueError as e:
+            raise ValueError(f"Invalid layer dimensions in '{architecture}': {e}")
+    elif architecture.startswith("tabular-texas-mlp-") and "_" in architecture:
+        # Parse custom layer dimensions from architecture name for Texas dataset
+        # e.g., "tabular-texas-mlp-128_128" -> [128, 128]
+        input_dim = 3084
+        try:
+            dims_str = architecture.replace("tabular-texas-mlp-", "")
             layer_dims = [int(dim) for dim in dims_str.split("_")]
             if not layer_dims:
                 raise ValueError("No layer dimensions specified")
