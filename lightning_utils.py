@@ -87,7 +87,10 @@ class LightningBaseNet(pl.LightningModule):
         self.privacy_engine = None
         self.dp_enabled = False
 
-        self.automatic_optimization = False # for some reason doesn't call DP steps otherwise.
+        if self.enable_dp:
+            self.automatic_optimization = False # for some reason doesn't call DP steps otherwise.
+        else:
+            self.automatic_optimization = True
         
         self.save_hyperparameters(
             "architecture",
@@ -150,10 +153,11 @@ class LightningBaseNet(pl.LightningModule):
         loss = self.loss_fn(logits, targets).mean()
         acc1, acc5 = accuracy(logits, targets, topk=(1, 5))
 
-        optimizer = self.trainer.optimizers[0]
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        if not self.automatic_optimization:
+            optimizer = self.trainer.optimizers[0]
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
 #        sched = self.lr_schedulers()
 #        lr_scheduler.step()
 
@@ -195,26 +199,26 @@ class LightningBaseNet(pl.LightningModule):
         }
         return rets
 
-    def on_validation_end(self) -> None:
-        if not self.automatic_optimization:
-            # Save a checkpoint of the model
-            ckpt_dir_path = os.path.join(self.trainer.log_dir, 'checkpoints')
-            os.makedirs(ckpt_dir_path, exist_ok=True)
+    # def on_validation_end(self) -> None:
+    #     if not self.automatic_optimization:
+    #         # Save a checkpoint of the model
+    #         ckpt_dir_path = os.path.join(self.trainer.log_dir, 'checkpoints')
+    #         os.makedirs(ckpt_dir_path, exist_ok=True)
         
-            ckpt_path = os.path.join(self.trainer.log_dir, 'checkpoints', 'ckpt.pt')
+    #         ckpt_path = os.path.join(self.trainer.log_dir, 'checkpoints', 'ckpt.pt')
             
-            # Create a new state dict with fixed keys (remove _module prefix)
-            fixed_state_dict = {}
-            for key, value in self.model.state_dict().items():
-                if key.startswith('model._module.'):
-                    # Remove the _module prefix
-                    new_key = key.replace('model._module.', 'model.')
-                    fixed_state_dict[new_key] = value
-                else:
-                    fixed_state_dict[key] = value
+    #         # Create a new state dict with fixed keys (remove _module prefix)
+    #         fixed_state_dict = {}
+    #         for key, value in self.model.state_dict().items():
+    #             if key.startswith('model._module.'):
+    #                 # Remove the _module prefix
+    #                 new_key = key.replace('model._module.', 'model.')
+    #                 fixed_state_dict[new_key] = value
+    #             else:
+    #                 fixed_state_dict[key] = value
                     
-            torch.save(fixed_state_dict, ckpt_path)
-        return super().on_validation_end()
+    #         torch.save(fixed_state_dict, ckpt_path)
+    #     return super().on_validation_end()
     
     def on_validation_epoch_end(self):
         # Lightning handles averaging automatically
