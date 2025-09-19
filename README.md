@@ -16,15 +16,23 @@ conda activate qmiaenv
 ### Data Preparation
 
 #### CINIC-10
-- Download from: https://datashare.ed.ac.uk/handle/10283/3192
+- Download into `data` from: https://datashare.ed.ac.uk/handle/10283/3192
 - Combine the train and validation splits into a single folder named `trainval`
-- Rename the data directory to `cinic10`
+- Rename the directory to `data/cinic10`
 
 #### CIFAR-100
 - Automatically downloaded by TorchVision within the dataloader
 
 #### ImageNet-1K
 - Download by running the `download_imagenet_folder()` function provided in `data_utils.py`
+
+#### Purchase
+- Download into `data` from: https://github.com/privacytrustlab/datasets/blob/master/dataset_purchase.tgz
+- Run `python convert_purchase_dataset.py`
+
+#### Texas
+- Download into `data` from: https://github.com/privacytrustlab/datasets/blob/master/dataset_texas.tgz
+- Run `python convert_texas_dataset.py`
 
 ## Experiments
 
@@ -92,6 +100,17 @@ CLS_SAMPLES=1  # Change to 5, 10, ... 200 for different sample sizes
 Results will be stored in:
 ```
 models/mia/base_imagenet-1k/0_16/resnet-50/attack_imagenet-1k/0_16/facebook/convnext-tiny-224/score_fn_top_two_margin/loss_fn_gaussian/cls_drop_none_samples_###/predictions/plots
+```
+
+### Texas Class Dropout (Figure X)
+
+Run `test_dropout_tabular.sh` with the following variables:
+```bash
+BASE_ARCHITECTURE=mlp-texas-small
+QMIA_ARCHITECTURE=mlp-texas-small
+BASE_DATASET=texas/0_16
+ATTACK_DATASET=texas/0_16
+DROPPED_CLASSES=("0-10")
 ```
 
 ### Gaussian Mixture Models (GMMs) for Last-Layer Embeddings (Figure 5)

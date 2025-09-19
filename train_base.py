@@ -109,12 +109,17 @@ def argparser():
     )
 
     # Set number of base classes.
-    if "cifar100" in args.dataset.lower():
+    ds_lower = args.dataset.lower()
+    if ds_lower.startswith("cifar100"):
         args.num_base_classes = 100
-    elif "imagenet-1k" in args.dataset.lower():
+    elif ds_lower.startswith("imagenet-1k"):
         args.num_base_classes = 1000
-    elif "cifar20" in args.dataset.lower():
+    elif ds_lower.startswith("cifar20"):
         args.num_base_classes = 20
+    elif ds_lower.startswith("texas"):
+        args.num_base_classes = 100
+    elif ds_lower.startswith("purchase"):
+        args.num_base_classes = 100
     else:
         args.num_base_classes = 10
 
@@ -163,7 +168,7 @@ def train_model(config, args, callbacks=None, rerun=False):
         base_image_size=args.base_image_size,
     )
     
-    checkpoint_callback = ModelCheckpoint(
+    best_val_checkpoint_callback = ModelCheckpoint(
         dirpath=checkpoint_dir,
         monitor="ptl/val_acc1",
         mode="max",
@@ -186,8 +191,12 @@ def train_model(config, args, callbacks=None, rerun=False):
         mode="max",
     )
 
+    use_best_val_checkpoint = False # MANUAL FLAG
 
-    callbacks = callbacks + [last_checkpoint_callback] + [TQDMProgressBar()] + [checkpoint_callback] + [early_stopping_callback]
+    callbacks = callbacks + [last_checkpoint_callback] + [TQDMProgressBar()]
+    if use_best_val_checkpoint:
+        callbacks += [best_val_checkpoint_callback]
+        callbacks += [early_stopping_callback]
 
     trainer = pl.Trainer(
         max_epochs=config["epochs"] if not args.DEBUG else 1,
@@ -207,13 +216,17 @@ def train_model(config, args, callbacks=None, rerun=False):
     trainer.fit(lightning_model, datamodule=datamodule)
     if trainer.global_rank == 0:
         # reload best network and save just the base model
+        if use_best_val_checkpoint:
+            chosen_checkpoint = best_val_checkpoint_callback.best_model_path
+        else:
+            chosen_checkpoint = last_checkpoint_callback.best_model_path
         lightning_model = LightningBaseNet.load_from_checkpoint(
-            checkpoint_callback.best_model_path
+            chosen_checkpoint
         )
         torch.save(lightning_model.model.state_dict(), checkpoint_path)
         print(
             "saved model from {} to {} ".format(
-                checkpoint_callback.best_model_path, checkpoint_path
+                chosen_checkpoint, checkpoint_path
             )
         )
     trainer.strategy.barrier()

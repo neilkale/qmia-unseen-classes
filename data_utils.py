@@ -14,6 +14,9 @@ from torch.utils.data import DataLoader, Subset
 from torchvision import transforms
 import torchvision.datasets as tv_datasets
 
+import torch
+from torch.utils.data import Dataset
+
 def download_imagenet_folder(
     hf_name: str = "evanarlian/imagenet_1k_resized_256",
     data_root: str = "./data",
@@ -63,6 +66,10 @@ class DATASET_FLAGS(NamedTuple):
     CINIC10_STD = (0.24205776, 0.23828046, 0.25874835)
     IMAGENET_MEAN = (0.485, 0.456, 0.406)
     IMAGENET_STD = (0.229, 0.224, 0.225)
+    PURCHASE_MEAN = (0.5,)
+    PURCHASE_STD = (0.5,)
+    TEXAS_MEAN = (0.0,)
+    TEXAS_STD = (1.0,)
 
 def set_transform(dataset, transform):
     """
@@ -284,6 +291,136 @@ class PairedImageFolder(SortedImageFolder):
         #     target = self.target_transform(target)
 
         return img, target, base_img
+
+class PairedTexasDataset(Dataset):
+    """
+    Texas dataset that loads numpy files from directory structure,
+    returning (data, target, base_data) tuples to match the pattern of other datasets.
+    """
+    def __init__(self, root_dir, transform=None, target_transform=None):
+        super().__init__()
+        
+        self.root_dir = Path(root_dir)
+        self.transform = transform
+        self.target_transform = target_transform
+        
+        # Collect all samples
+        self.samples = []
+        self.targets = []
+        
+        if not self.root_dir.exists():
+            raise FileNotFoundError(f"Texas dataset directory not found at {root_dir}")
+        
+        # Load class directories (class_1, class_2, ..., class_100)
+        class_dirs = sorted([d for d in self.root_dir.iterdir() if d.is_dir() and d.name.startswith("class_")])
+        
+        for class_dir in class_dirs:
+            class_id = int(class_dir.name.split("_")[1]) - 1  # Convert to 0-based indexing (1-100 -> 0-99)
+            
+            # Get all .npy files in this class directory
+            npy_files = sorted(class_dir.glob("*.npy"))
+            
+            for npy_file in npy_files:
+                self.samples.append(str(npy_file))
+                self.targets.append(class_id)
+        
+        print(f"Loaded {len(self.samples)} samples from {len(class_dirs)} classes")
+        
+    def __len__(self):
+        return len(self.samples)
+    
+    def __getitem__(self, index: int) -> Tuple[torch.Tensor, int, torch.Tensor]:
+        """
+        Args:
+            index (int): Index
+        
+        Returns:
+            tuple: (data, target, base_data) where target is the class index
+        """
+        file_path = self.samples[index]
+        target = self.targets[index]
+        
+        # Load numpy array
+        features = np.load(file_path)
+        
+        # Convert to tensor
+        features_tensor = torch.from_numpy(features)
+        base_features_tensor = features_tensor.clone()  # For tabular data, base is same as original
+        
+        # Apply transforms if any (for tabular data, this might be normalization, noise, etc.)
+        if self.transform is not None:
+            features_tensor = self.transform(features_tensor)
+        
+        if self.target_transform is not None:
+            target = self.target_transform(target)
+            
+        # For tabular data, base_data is typically the same as data
+        # but could be a different preprocessing/normalization
+        return features_tensor, target, base_features_tensor
+
+class PairedPurchaseDataset(Dataset):
+    """
+    Purchase dataset that loads numpy files from directory structure,
+    returning (data, target, base_data) tuples to match the pattern of other datasets.
+    """
+    def __init__(self, root_dir, transform=None, target_transform=None):
+        super().__init__()
+        
+        self.root_dir = Path(root_dir)
+        self.transform = transform
+        self.target_transform = target_transform
+        
+        # Collect all samples
+        self.samples = []
+        self.targets = []
+        
+        if not self.root_dir.exists():
+            raise FileNotFoundError(f"Purchase dataset directory not found at {root_dir}")
+        
+        # Load class directories (class_1, class_2, ..., class_100)
+        class_dirs = sorted([d for d in self.root_dir.iterdir() if d.is_dir() and d.name.startswith("class_")])
+        
+        for class_dir in class_dirs:
+            class_id = int(class_dir.name.split("_")[1]) - 1  # Convert to 0-based indexing (1-100 -> 0-99)
+            
+            # Get all .npy files in this class directory
+            npy_files = sorted(class_dir.glob("*.npy"))
+            
+            for npy_file in npy_files:
+                self.samples.append(str(npy_file))
+                self.targets.append(class_id)
+        
+        print(f"Loaded {len(self.samples)} samples from {len(class_dirs)} classes")
+        
+    def __len__(self):
+        return len(self.samples)
+    
+    def __getitem__(self, index: int) -> Tuple[torch.Tensor, int, torch.Tensor]:
+        """
+        Args:
+            index (int): Index
+        
+        Returns:
+            tuple: (data, target, base_data) where target is the class index
+        """
+        file_path = self.samples[index]
+        target = self.targets[index]
+        
+        # Load numpy array
+        features = np.load(file_path)
+        
+        # Convert to tensor
+        features_tensor = torch.from_numpy(features)
+        base_features_tensor = features_tensor.clone()  # For tabular data, base is same as original
+        
+        # Apply transforms if any (for tabular data, this might be normalization, noise, etc.)
+        if self.transform is not None:
+            features_tensor = self.transform(features_tensor)
+        
+        if self.target_transform is not None:
+            target = self.target_transform(target)
+            
+        return features_tensor, target, base_features_tensor
 
 def get_cifar(locator="cifar10/0_16", image_size=-1, base_image_size=-1, data_root="./data"):
     if locator.split("/")[0] == "cifar10":
@@ -547,6 +684,138 @@ def get_imagenet(
 
     return private_dataset, public_dataset, test_dataset, transform_dict
 
+def get_texas(locator="texas/0_16", image_size=-1, base_image_size=-1, data_root="./data"):
+    """
+    Get Texas dataset following the same pattern as CINIC10.
+    Note: image_size and base_image_size are ignored for tabular data.
+    """
+    dataset_name = locator.split("/")[0]
+    pkeep = 0.5
+    experiment_idx, num_experiment = (int(n) for n in locator.split("/")[1].split("_"))
+
+    # For tabular data, "transforms" are different - might include normalization, noise, etc.
+    # For now, we'll use simple identity transforms but structure is ready for extensions
+    transform_train = transforms.Compose([
+        # Could add noise, dropout, etc. for tabular data augmentation
+        transforms.Lambda(lambda x: x)  # Identity for now
+    ])
+    transform_test = None
+    transform_vanilla = None
+
+    root_dir = os.path.join(data_root, dataset_name)
+
+    private_public_dataset = PairedTexasDataset(
+        root_dir=os.path.join(root_dir, "trainval"),
+        transform=transform_train,
+    )
+
+    test_dataset = PairedTexasDataset(
+        root_dir=os.path.join(root_dir, "test"),
+        transform=transform_test,
+    )
+
+    master_keep_path = os.path.join(
+        data_root, dataset_name, "{:d}".format(num_experiment), "master_keep.npy"
+    )
+    if os.path.exists(master_keep_path):
+        master_keep = np.load(master_keep_path)
+    else:
+        os.makedirs(os.path.dirname(master_keep_path), exist_ok=True)
+        with temp_seed(DATASET_FLAGS.DATA_SEED):
+            master_keep = np.random.uniform(
+                size=(num_experiment, len(private_public_dataset))
+            )
+        order = master_keep.argsort(0)
+        master_keep = order < int(pkeep * num_experiment)
+        np.save(master_keep_path, master_keep)
+
+    if int(experiment_idx) == int(num_experiment):
+        print("SPECIAL-CASING THIS IS THE FULL EVALUATION/TRAINING DATASET")
+        private_indices = list(np.arange(start=0, stop=32))
+        public_indices = list(np.arange(start=0, stop=len(private_public_dataset)))
+    else:
+        keep = np.array(master_keep[experiment_idx], dtype=bool)
+        private_indices = list(np.where(keep)[0])
+        public_indices = list(np.where(~keep)[0])
+    
+    public_dataset = Subset(private_public_dataset, public_indices)
+    private_dataset = Subset(private_public_dataset, private_indices)
+
+    transform_dict = {
+        "train": transform_train,
+        "test": transform_test,
+        "vanilla": transform_vanilla,
+    }
+
+    return private_dataset, public_dataset, test_dataset, transform_dict
+
+def get_purchase(
+    locator="purchase/0_16", image_size=-1, base_image_size=-1, data_root="./data"
+):
+    """
+    Get Purchase dataset following the same pattern as CINIC10.
+    Note: image_size and base_image_size are ignored for tabular data.
+    """
+    dataset_name = locator.split("/")[0]
+    pkeep = 0.5
+    experiment_idx, num_experiment = (int(n) for n in locator.split("/")[1].split("_"))
+    
+    # For tabular data, "transforms" are different - might include normalization, noise, etc.
+    # For now, we'll use simple identity transforms but structure is ready for extensions
+    transform_train = transforms.Compose([
+        # Could add noise, dropout, etc. for tabular data augmentation
+        transforms.Lambda(lambda x: x)  # Identity for now
+    ])
+    transform_test = None
+    transform_vanilla = None
+    
+    root_dir = os.path.join(data_root, dataset_name)
+
+    private_public_dataset = PairedPurchaseDataset(
+        root_dir=os.path.join(root_dir, "trainval"),
+        transform=transform_train,
+    )
+
+    test_dataset = PairedPurchaseDataset(
+        root_dir=os.path.join(root_dir, "test"),
+        transform=transform_test,
+    )
+
+    master_keep_path = os.path.join(
+        data_root, dataset_name, "{:d}".format(num_experiment), "master_keep.npy"
+    )
+    if os.path.exists(master_keep_path):
+        master_keep = np.load(master_keep_path)
+    else:
+        os.makedirs(os.path.dirname(master_keep_path), exist_ok=True)
+        with temp_seed(DATASET_FLAGS.DATA_SEED):
+            master_keep = np.random.uniform(
+                size=(num_experiment, len(private_public_dataset))
+            )
+        order = master_keep.argsort(0)
+        master_keep = order < int(pkeep * num_experiment)
+        np.save(master_keep_path, master_keep)
+
+    if int(experiment_idx) == int(num_experiment):
+        print("SPECIAL-CASING THIS IS THE FULL EVALUATION/TRAINING DATASET")
+        private_indices = list(np.arange(start=0, stop=32))
+        public_indices = list(np.arange(start=0, stop=len(private_public_dataset)))
+    else:
+        keep = np.array(master_keep[experiment_idx], dtype=bool)
+        private_indices = list(np.where(keep)[0])
+        public_indices = list(np.where(~keep)[0])
+    
+    public_dataset = Subset(private_public_dataset, public_indices)
+    private_dataset = Subset(private_public_dataset, private_indices)
+
+    transform_dict = {
+        "train": transform_train,
+        "test": transform_test,
+        "vanilla": transform_vanilla,
+    }
+
+    return private_dataset, public_dataset, test_dataset, transform_dict
+
 def get_data(
     split_frac: float,
     dataset: str,
@@ -580,6 +849,20 @@ def get_data(
             test_dataset,
             transform_dict,
         ) = get_imagenet(locator=dataset, image_size=image_size, base_image_size=base_image_size, data_root=data_root)
+    elif dataset.startswith("purchase"):
+        (
+            private_dataset,
+            public_dataset,
+            test_dataset,
+            transform_dict,
+        ) = get_purchase(locator=dataset, image_size=image_size, base_image_size=base_image_size, data_root=data_root)
+    elif dataset.startswith("texas"):
+        (
+            private_dataset,
+            public_dataset,
+            test_dataset,
+            transform_dict,
+        ) = get_texas(locator=dataset, image_size=image_size, base_image_size=base_image_size, data_root=data_root)
     else:
         raise NotImplementedError(
             f"Dataset {dataset} not supported. Please use cifar10, cifar100, cinic10, or imagenet."

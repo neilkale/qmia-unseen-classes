@@ -2,3 +2,5 @@
 /models/*
 /__pycache__/*
 /lightning_logs/*
+AGENTS.md
+/temp/*

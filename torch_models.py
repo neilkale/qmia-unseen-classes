@@ -3,6 +3,7 @@ import os
 os.environ["HF_DATASETS_CACHE"] = "./data/huggingface/datasets"
 
 import torch
+import torch.nn as nn
 import torchvision.models as tvm
 import transformers
 from cifar_architectures import (
@@ -217,6 +218,84 @@ def get_cifar_resnet_model(
 
     raise NotImplementedError
 
+MLP_CONFIGS = {
+    "purchase": {"input_dim": 600},
+    "texas": {"input_dim": 6169},
+}
+
+# Shared architectures that can be applied to any dataset
+MLP_ARCHITECTURES = {
+    # A linear classifier (no hidden layers)
+    "linear": [],
+    # A single-layer network for matching the RMIA mlp setting.
+    "tiny": [128],
+    # A compact, two-layer network for quick baselines
+    "small": [256, 128],
+    # A balanced, medium-sized default that works well for both datasets
+    "medium": [1024, 512, 256],
+    # A wider alternative to the default to retain more features at a high dimension
+    "wide": [1024, 1024],
+    # A deep and high-capacity network for more complex tasks
+    "large": [2048, 1024, 512, 256],
+}
+
+def get_fresh_tabular_mlp_model(
+    architecture, num_classes=10, hidden_dims=[], extra_inputs=None
+):
+    """
+    Creates a tabular MLP model for structured data.
+    
+    Supports both predefined architectures and custom layer specifications:
+    - mlp-purchase-medium: [512, 256, 128, 64] (600 input features)
+    - mlp-texas-large: [2048, 1024, 512, 256, 128] (3084 input features)
+
+    - mlp-purchase-{dim1}_{dim2}_...: Custom layer dimensions (600 input features)
+    - mlp-texas-{dim1}_{dim2}_...: Custom layer dimensions (3084 input features)
+    Examples:
+    - mlp-purchase-256_128: [256, 128] (600 input features)
+    """
+
+    try:
+        parts = architecture.split("-")
+        if parts[0] != "mlp" or len(parts) < 2:
+            raise ValueError("Format error.")
+
+        dataset_name = parts[1]
+        # Use 'default' if no size/dims are specified, otherwise use the third part
+        size_key = parts[2] if len(parts) > 2 else "default"
+    except (IndexError, ValueError):
+        raise ValueError(
+            f"Invalid architecture string: '{architecture}'. "
+            "Expected format: 'mlp-{dataset}-{size_or_dims}'."
+        )
+
+    dataset_config = MLP_CONFIGS.get(dataset_name)
+    if not dataset_config:
+        raise NotImplementedError(f"Dataset configuration '{dataset_name}' not found.")
+    input_dim = dataset_config["input_dim"]
+
+    # 3. Get architecture to determine hidden layer dimensions
+    layer_dims = MLP_ARCHITECTURES.get(size_key)
+    if layer_dims is None:
+        try:
+            layer_dims = [int(dim) for dim in size_key.split("_")]
+            if not layer_dims: raise ValueError("Empty custom layers.")
+        except ValueError:
+            raise NotImplementedError(
+                f"Architecture '{size_key}' is not predefined and is not a valid custom format (e.g., '512_256')."
+            )
+
+    # 4. Build the model
+    layers = []
+    prev_dim = input_dim
+    for hidden_dim in layer_dims:
+        layers.append(nn.Linear(prev_dim, hidden_dim))
+        layers.append(nn.ReLU()) if len(layer_dims) > 1 else layers.append(nn.Tanh()) # Use Tanh for single hidden-layer networks
+        prev_dim = hidden_dim
+
+    layers.append(nn.Linear(prev_dim, num_classes))
+
+    return nn.Sequential(*layers)
 
 def get_model(
     architecture,
@@ -239,7 +318,13 @@ def get_model(
             hidden_dims=hidden_dims,
             extra_inputs=extra_inputs,
         )
-
+    elif architecture.startswith("mlp"):
+        model = get_fresh_tabular_mlp_model(
+            architecture,
+            num_classes=n_outputs,
+            hidden_dims=hidden_dims,
+            extra_inputs=extra_inputs,
+        )
     elif "/" in architecture:
         model = get_huggingface_model(
             architecture,

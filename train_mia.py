@@ -87,7 +87,7 @@ def argparser():
         "--loss_fn",
         type=str,
         default="gaussian",
-        help="loss function (gaussian, quantile)",
+        help="loss function (gaussian, huber_gaussian)",
     )
 
     parser.add_argument(
@@ -214,12 +214,17 @@ def argparser():
         args.base_architecture
     )
 
-    if "cifar100" in args.base_model_dataset.lower():
+    base_lower = args.base_model_dataset.lower()
+    if base_lower.startswith("cifar100"):
         args.num_base_classes = 100
-    elif "imagenet-1k" in args.base_model_dataset.lower():
+    elif base_lower.startswith("imagenet-1k"):
         args.num_base_classes = 1000
-    elif "cifar20" in args.base_model_dataset.lower():
+    elif base_lower.startswith("cifar20"):
         args.num_base_classes = 20
+    elif base_lower.startswith("texas"):
+        args.num_base_classes = 100
+    elif base_lower.startswith("purchase"):
+        args.num_base_classes = 100
     else:
         args.num_base_classes = 10
 
@@ -253,7 +258,7 @@ def train_model(args):
     datamodule = CustomDataModule(
         dataset_name=args.attack_dataset,
         stage=args.data_mode,
-        num_workers=16,
+        num_workers=32,
         image_size=args.image_size,
         base_image_size=args.base_image_size,
         batch_size=args.batch_size if not args.DEBUG else 2,
