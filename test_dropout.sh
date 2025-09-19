@@ -4,8 +4,8 @@ DATA_DIR=./data/
 ### Set these variables ###
 BASE_ARCHITECTURE=cifar-resnet-18
 QMIA_ARCHITECTURE=facebook/convnext-tiny-224 
-BASE_DATASET=cinic10/0_16
-ATTACK_DATASET=cinic10/0_16
+BASE_DATASET=cifar100/0_16
+ATTACK_DATASET=cifar100/0_16
 DROPPED_CLASSES=(1)
 ###########################
 

@@ -26,6 +26,14 @@ conda activate qmiaenv
 #### ImageNet-1K
 - Download by running the `download_imagenet_folder()` function provided in `data_utils.py`
 
+#### Purchase
+- Download from: https://github.com/privacytrustlab/datasets/blob/master/dataset_purchase.tgz
+- Run `python convert_purchase_dataset.py`
+
+#### Purchase
+- Download from: https://github.com/privacytrustlab/datasets/blob/master/dataset_texas.tgz
+- Run `python convert_texas_dataset.py`
+
 ## Experiments
 
 ### CIFAR-10 Class Dropout (Figure 3a)
@@ -92,6 +100,17 @@ CLS_SAMPLES=1  # Change to 5, 10, ... 200 for different sample sizes
 Results will be stored in:
 ```
 models/mia/base_imagenet-1k/0_16/resnet-50/attack_imagenet-1k/0_16/facebook/convnext-tiny-224/score_fn_top_two_margin/loss_fn_gaussian/cls_drop_none_samples_###/predictions/plots
+```
+
+### Purchase Class Dropout (Figure X)
+
+Run `test_dropout_tabular.sh` with the following variables:
+```bash
+BASE_ARCHITECTURE=mlp-texas-small
+QMIA_ARCHITECTURE=mlp-texas-small
+BASE_DATASET=texas/0_16
+ATTACK_DATASET=texas/0_16
+DROPPED_CLASSES=("0-10")
 ```
 
 ### Gaussian Mixture Models (GMMs) for Last-Layer Embeddings (Figure 5)

@@ -29,7 +29,7 @@ def build_optimizer(
         optimizer = optim.SGD(
             parameters,
             momentum=momentum,
-            nesterov=True,
+            nesterov=False,
             lr=lr,
             weight_decay=weight_decay,
         )

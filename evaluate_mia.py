@@ -5,6 +5,7 @@ import sys
 import torch
 import numpy as np
 import random
+import json
 
 from tqdm import tqdm
 from lightning_utils import LightningQMIA, CustomWriter
@@ -187,12 +188,17 @@ def argparser():
         "plots",
     )
 
-    if "cifar100" in args.base_model_dataset.lower():
+    base_lower = args.base_model_dataset.lower()
+    if "cifar100" in base_lower:
         args.num_base_classes = 100
-    elif "imagenet-1k" in args.base_model_dataset.lower():
+    elif "imagenet-1k" in base_lower:
         args.num_base_classes = 1000
-    elif "cifar20" in args.base_model_dataset.lower():
+    elif "cifar20" in base_lower:
         args.num_base_classes = 20
+    elif base_lower.startswith("texas"):
+        args.num_base_classes = 100
+    elif base_lower.startswith("purchase"):
+        args.num_base_classes = 100
     else:
         args.num_base_classes = 10
 
@@ -287,13 +293,13 @@ def evaluate_mia(args, rerun=False):
     if os.path.exists(args.attack_results_path) and not rerun:
         print(f"Results already exist at {args.attack_results_path}.")
         return
-    else:
-        # Remove the existing results directory if it exists
-        if os.path.exists(args.attack_results_path):
-            print(f"Removing existing results directory at {args.attack_results_path}.")
-            shutil.rmtree(args.attack_results_path)
-        # Create a new results directory
-        print(f"Creating results directory at {args.attack_results_path}.")
+    elif rerun:
+        old_files = glob.glob(os.path.join(args.attack_results_path, "predictions_*.pt"))
+        for f in old_files:
+            try:
+                os.remove(f)
+            except FileNotFoundError:
+                pass  # Another process already removed it
         os.makedirs(args.attack_results_path, exist_ok=True)
     
     # Create lightning model
@@ -396,15 +402,15 @@ def plot_roc_curve(test_preds, val_preds, test_label="private", val_label="publi
             'fpr': fpr, 
             'tpr': tpr, 
             'auc': roc_auc,
-            'fpr_at_tpr_0.1': tpr_at_fpr(tpr, fpr, 1e-3),
-            'fpr_at_tpr_1': tpr_at_fpr(tpr, fpr, 1e-2)
+            'tpr_at_fpr_0.1': tpr_at_fpr(tpr, fpr, 1e-3),
+            'tpr_at_fpr_1': tpr_at_fpr(tpr, fpr, 1e-2)
         },
         'baseline': {
             'fpr': baseline_fpr, 
             'tpr': baseline_tpr, 
             'auc': baseline_roc_auc,
-            'fpr_at_tpr_0.1': tpr_at_fpr(baseline_tpr, baseline_fpr, 1e-3),
-            'fpr_at_tpr_1': tpr_at_fpr(baseline_tpr, baseline_fpr, 1e-2)
+            'tpr_at_fpr_0.1': tpr_at_fpr(baseline_tpr, baseline_fpr, 1e-3),
+            'tpr_at_fpr_1': tpr_at_fpr(baseline_tpr, baseline_fpr, 1e-2)
         },
         'title': title
     }
@@ -427,20 +433,20 @@ def plot_roc_curve(test_preds, val_preds, test_label="private", val_label="publi
         ax.legend(loc='lower right')
 
         ax.annotate(
-            f'QMIA FPR at TPR=0.1%: {tpr_at_fpr(tpr, fpr, 1e-3)*100:.2f}%',
+            f'QMIA TPR at FPR=0.1%: {tpr_at_fpr(tpr, fpr, 1e-3)*100:.2f}%',
             xy=(0.01, 0.9), xycoords='axes fraction', color='steelblue',
         )
         ax.annotate(
-            f'QMIA FPR at TPR=1%: {tpr_at_fpr(tpr, fpr, 1e-2)*100:.2f}%',
+            f'QMIA TPR at FPR=1%: {tpr_at_fpr(tpr, fpr, 1e-2)*100:.2f}%',
             xy=(0.01, 0.95), xycoords='axes fraction', color='steelblue',
         )
 
         ax.annotate(
-            f'Baseline FPR at TPR=0.1%: {tpr_at_fpr(baseline_tpr, baseline_fpr, 1e-3)*100:.2f}%',
+            f'Baseline TPR at FPR=0.1%: {tpr_at_fpr(baseline_tpr, baseline_fpr, 1e-3)*100:.2f}%',
             xy=(0.01, 0.8), xycoords='axes fraction', color='indianred',
         )
         ax.annotate(
-            f'Baseline FPR at TPR=1%: {tpr_at_fpr(baseline_tpr, baseline_fpr, 1e-2)*100:.2f}%',
+            f'Baseline TPR at FPR=1%: {tpr_at_fpr(baseline_tpr, baseline_fpr, 1e-2)*100:.2f}%',
             xy=(0.01, 0.85), xycoords='axes fraction', color='indianred',
         )
         
@@ -551,6 +557,8 @@ def plot_roc_curves(test_preds, val_preds, labels=['ID', 'OOD']):
 
     plt.savefig(os.path.join(args.attack_plots_path, "roc_curve.png"))
     plt.close()
+
+    
 
 def plot_scores_per_class(
     preds,
@@ -1388,13 +1396,14 @@ if __name__ == "__main__":
 
     print("Plotting ROC curves...")
     plot_roc_curve(test_preds, val_preds)
+    metrics_summary = {}
     if args.cls_drop:
         # OOD
         test_mask = torch.tensor([label.item() in args.cls_drop for label in test_preds[3]])
         test_preds_ood = [pred[test_mask] for pred in test_preds]
         val_mask = torch.tensor([label.item() in args.cls_drop for label in val_preds[3]])
         val_preds_ood = [pred[val_mask] for pred in val_preds]
-        plot_roc_curve(test_preds_ood, val_preds_ood, test_label="private (OOD)", val_label="public (OOD)", title=f'(Dropped Class/es, {args.cls_drop})', save_path="roc_curve_ood")
+        ood_curve_data, _, _ = plot_roc_curve(test_preds_ood, val_preds_ood, test_label="private (OOD)", val_label="public (OOD)", title=f'(Dropped Class/es, {args.cls_drop})', save_path="roc_curve_ood")
         # ID
         test_mask = torch.tensor([label.item() not in args.cls_drop for label in test_preds[3]])
         test_preds_ood = [pred[test_mask] for pred in test_preds]
@@ -1402,7 +1411,29 @@ if __name__ == "__main__":
         val_preds_ood = [pred[val_mask] for pred in val_preds]
         all_classes = np.arange(args.num_base_classes)
         kept_classes = np.setdiff1d(all_classes, args.cls_drop)
-        plot_roc_curve(test_preds_ood, val_preds_ood, test_label="private (ID)", val_label="public (ID)", title=f'(Kept Class/es, all but {args.cls_drop})', save_path="roc_curve_id")
+        id_curve_data, _, _ = plot_roc_curve(test_preds_ood, val_preds_ood, test_label="private (ID)", val_label="public (ID)", title=f'(Kept Class/es, all but {args.cls_drop})', save_path="roc_curve_id")
+
+        def _extract_metrics(cd):
+            return {
+                'qmia': {
+                    'auc': float(cd['qmia']['auc']),
+                    'tpr_at_fpr_0.001': float(tpr_at_fpr(cd['qmia']['tpr'], cd['qmia']['fpr'], 1e-3)),
+                    'tpr_at_fpr_0.01': float(tpr_at_fpr(cd['qmia']['tpr'], cd['qmia']['fpr'], 1e-2)),
+                },
+                'baseline': {
+                    'auc': float(cd['baseline']['auc']),
+                    'tpr_at_fpr_0.001': float(tpr_at_fpr(cd['baseline']['tpr'], cd['baseline']['fpr'], 1e-3)),
+                    'tpr_at_fpr_0.01': float(tpr_at_fpr(cd['baseline']['tpr'], cd['baseline']['fpr'], 1e-2)),
+                }
+            }
+
+        metrics_summary = {
+            'ID': _extract_metrics(id_curve_data),
+            'OOD': _extract_metrics(ood_curve_data),
+        }
+
+        with open(os.path.join(args.attack_plots_path, 'roc_metrics_id_ood.json'), 'w') as f:
+            json.dump(metrics_summary, f, indent=2)
 
     if args.num_base_classes <= 10:
         test_preds_per_cls = []
