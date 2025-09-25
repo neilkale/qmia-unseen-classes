@@ -422,6 +422,109 @@ class PairedPurchaseDataset(Dataset):
             
         return features_tensor, target, base_features_tensor
 
+class PairedAGNewsDataset(Dataset):
+    """
+    AG News dataset wrapper that tokenizes text and returns
+    (input_ids_tensor, label, base_input_ids_tensor) to match the
+    paired pattern used elsewhere.
+    """
+    def __init__(self, split: str = "train", tokenizer_name: str = "distilbert-base-uncased", max_length: int = 256, transform=None, target_transform=None):
+        super().__init__()
+
+        from transformers import AutoTokenizer
+
+        self.transform = transform
+        self.target_transform = target_transform
+
+        # Load HF dataset
+        hf_ds = load_dataset("ag_news", split=split)
+
+        # Save targets before any column removal
+        self.targets = list(hf_ds["label"]) if "label" in hf_ds.column_names else [0] * len(hf_ds)
+
+        # Simple text cleanup mirroring agnews.replace_backslashes
+        def _replace_backslashes(batch):
+            return {"text": [t.replace("\\", " ") for t in batch["text"]]}
+        hf_ds = hf_ds.map(_replace_backslashes, batched=True)
+
+        # Tokenize
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+        if tokenizer.pad_token is None and tokenizer.eos_token is not None:
+            tokenizer.pad_token = tokenizer.eos_token
+
+        def _tokenize(batch):
+            tok = tokenizer(batch["text"], padding="max_length", truncation=True, max_length=max_length)
+            return tok
+        hf_ds = hf_ds.map(_tokenize, batched=True)
+
+        self.input_ids = hf_ds["input_ids"]
+        # attention_mask available if needed later: hf_ds["attention_mask"]
+
+    def __len__(self) -> int:
+        return len(self.input_ids)
+
+    def __getitem__(self, index: int) -> Tuple[torch.Tensor, int, torch.Tensor]:
+        ids = torch.tensor(self.input_ids[index], dtype=torch.long)
+        if self.transform is not None:
+            ids = self.transform(ids)
+        label = self.targets[index]
+        if self.target_transform is not None:
+            label = self.target_transform(label)
+        base_ids = ids.clone()
+        return ids, label, base_ids
+
+class Paired20NewsgroupsDataset(Dataset):
+    """
+    20 Newsgroups dataset wrapper using scikit-learn for data loading.
+    Returns (input_ids_tensor, label, base_input_ids_tensor).
+    """
+    def __init__(self, subset: str = "train", remove=("headers", "footers", "quotes"), categories=None, tokenizer_name: str = "distilbert-base-uncased", max_length: int = 256, transform=None, target_transform=None):
+        super().__init__()
+
+        from transformers import AutoTokenizer
+        from pathlib import Path
+
+        self.transform = transform
+        self.target_transform = target_transform
+
+        # Expect per-example files under ./data/20newsgroups/prepared/{subset}/class_*/XXXX.txt
+        split_dir = Path("./data") / "20newsgroups" / "prepared" / subset
+        if not split_dir.exists():
+            raise FileNotFoundError(
+                f"Missing prepared 20 Newsgroups split at {split_dir}. Run: python prepare_20news_dataset.py"
+            )
+        texts = []
+        self.targets = []
+        class_dirs = sorted([d for d in split_dir.iterdir() if d.is_dir() and d.name.startswith("class_")])
+        for class_dir in class_dirs:
+            class_id = int(class_dir.name.split("_")[1]) - 1
+            files = sorted(class_dir.glob("*.txt"))
+            for fp in files:
+                with open(fp, "r", encoding="utf-8") as f:
+                    texts.append(f.read())
+                self.targets.append(class_id)
+
+        # Tokenize
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+        if tokenizer.pad_token is None and tokenizer.eos_token is not None:
+            tokenizer.pad_token = tokenizer.eos_token
+
+        enc = tokenizer(texts, padding="max_length", truncation=True, max_length=max_length)
+        self.input_ids = enc["input_ids"]
+
+    def __len__(self) -> int:
+        return len(self.input_ids)
+
+    def __getitem__(self, index: int) -> Tuple[torch.Tensor, int, torch.Tensor]:
+        ids = torch.tensor(self.input_ids[index], dtype=torch.long)
+        if self.transform is not None:
+            ids = self.transform(ids)
+        label = self.targets[index]
+        if self.target_transform is not None:
+            label = self.target_transform(label)
+        base_ids = ids.clone()
+        return ids, label, base_ids
+
 def get_cifar(locator="cifar10/0_16", image_size=-1, base_image_size=-1, data_root="./data"):
     if locator.split("/")[0] == "cifar10":
         dataset_name = "cifar10"
@@ -816,6 +919,113 @@ def get_purchase(
 
     return private_dataset, public_dataset, test_dataset, transform_dict
 
+def get_agnews(
+    locator="agnews/0_16", image_size=-1, base_image_size=-1, data_root="./data"
+):
+    """
+    Get AG News dataset following the same pattern as CINIC10/tabular datasets.
+    image_size/base_image_size are ignored for text.
+    """
+    dataset_name = locator.split("/")[0]
+    pkeep = 0.5
+    experiment_idx, num_experiment = (int(n) for n in locator.split("/")[1].split("_"))
+
+    # No augmentations by default for text; leave hooks for future transforms
+    transform_train = None
+    transform_test = None
+    transform_vanilla = None
+
+    private_public_dataset = PairedAGNewsDataset(split="train", transform=transform_train)
+    test_dataset = PairedAGNewsDataset(split="test", transform=transform_test)
+
+    master_keep_path = os.path.join(
+        data_root, dataset_name, "{:d}".format(num_experiment), "master_keep.npy"
+    )
+    if os.path.exists(master_keep_path):
+        master_keep = np.load(master_keep_path)
+    else:
+        os.makedirs(os.path.dirname(master_keep_path), exist_ok=True)
+        with temp_seed(DATASET_FLAGS.DATA_SEED):
+            master_keep = np.random.uniform(
+                size=(num_experiment, len(private_public_dataset))
+            )
+        order = master_keep.argsort(0)
+        master_keep = order < int(pkeep * num_experiment)
+        np.save(master_keep_path, master_keep)
+
+    if int(experiment_idx) == int(num_experiment):
+        print("SPECIAL-CASING THIS IS THE FULL EVALUATION/TRAINING DATASET")
+        private_indices = list(np.arange(start=0, stop=32))
+        public_indices = list(np.arange(start=0, stop=len(private_public_dataset)))
+    else:
+        keep = np.array(master_keep[experiment_idx], dtype=bool)
+        private_indices = list(np.where(keep)[0])
+        public_indices = list(np.where(~keep)[0])
+
+    public_dataset = Subset(private_public_dataset, public_indices)
+    private_dataset = Subset(private_public_dataset, private_indices)
+
+    transform_dict = {
+        "train": transform_train,
+        "test": transform_test,
+        "vanilla": transform_vanilla,
+    }
+
+    return private_dataset, public_dataset, test_dataset, transform_dict
+
+def get_20newsgroups(
+    locator="20newsgroups/0_16", image_size=-1, base_image_size=-1, data_root="./data"
+):
+    """
+    Get 20 Newsgroups dataset using scikit-learn, following the same split pattern.
+    image_size/base_image_size are ignored for text.
+    """
+    dataset_name = locator.split("/")[0]
+    pkeep = 0.5
+    experiment_idx, num_experiment = (int(n) for n in locator.split("/")[1].split("_"))
+
+    transform_train = None
+    transform_test = None
+    transform_vanilla = None
+
+    private_public_dataset = Paired20NewsgroupsDataset(subset="train", transform=transform_train)
+    test_dataset = Paired20NewsgroupsDataset(subset="test", transform=transform_test)
+
+    master_keep_path = os.path.join(
+        data_root, dataset_name, "{:d}".format(num_experiment), "master_keep.npy"
+    )
+    if os.path.exists(master_keep_path):
+        master_keep = np.load(master_keep_path)
+    else:
+        os.makedirs(os.path.dirname(master_keep_path), exist_ok=True)
+        with temp_seed(DATASET_FLAGS.DATA_SEED):
+            master_keep = np.random.uniform(
+                size=(num_experiment, len(private_public_dataset))
+            )
+        order = master_keep.argsort(0)
+        master_keep = order < int(pkeep * num_experiment)
+        np.save(master_keep_path, master_keep)
+
+    if int(experiment_idx) == int(num_experiment):
+        print("SPECIAL-CASING THIS IS THE FULL EVALUATION/TRAINING DATASET")
+        private_indices = list(np.arange(start=0, stop=32))
+        public_indices = list(np.arange(start=0, stop=len(private_public_dataset)))
+    else:
+        keep = np.array(master_keep[experiment_idx], dtype=bool)
+        private_indices = list(np.where(keep)[0])
+        public_indices = list(np.where(~keep)[0])
+
+    public_dataset = Subset(private_public_dataset, public_indices)
+    private_dataset = Subset(private_public_dataset, private_indices)
+
+    transform_dict = {
+        "train": transform_train,
+        "test": transform_test,
+        "vanilla": transform_vanilla,
+    }
+
+    return private_dataset, public_dataset, test_dataset, transform_dict
+
 def get_data(
     split_frac: float,
     dataset: str,
@@ -863,6 +1073,20 @@ def get_data(
             test_dataset,
             transform_dict,
         ) = get_texas(locator=dataset, image_size=image_size, base_image_size=base_image_size, data_root=data_root)
+    elif dataset.startswith("20newsgroups"):
+        (
+            private_dataset,
+            public_dataset,
+            test_dataset,
+            transform_dict,
+        ) = get_20newsgroups(locator=dataset, image_size=image_size, base_image_size=base_image_size, data_root=data_root)
+    elif dataset.startswith("agnews"):
+        (
+            private_dataset,
+            public_dataset,
+            test_dataset,
+            transform_dict,
+        ) = get_agnews(locator=dataset, image_size=image_size, base_image_size=base_image_size, data_root=data_root)
     else:
         raise NotImplementedError(
             f"Dataset {dataset} not supported. Please use cifar10, cifar100, cinic10, or imagenet."

@@ -199,6 +199,10 @@ def argparser():
         args.num_base_classes = 100
     elif base_lower.startswith("purchase"):
         args.num_base_classes = 100
+    elif "agnews" in base_lower:
+        args.num_base_classes = 4
+    elif base_lower.startswith("20newsgroups"):
+        args.num_base_classes = 20
     else:
         args.num_base_classes = 10
 
@@ -362,7 +366,9 @@ def tpr_at_fpr(tprs, fprs, target_fpr):
 def plot_roc_curve(test_preds, val_preds, test_label="private", val_label="public", title="", save_path="roc_curve", 
                   plot=True, fig=None, ax=None):
     
-    if args.num_base_classes == 10:
+    if args.num_base_classes == 4:
+        MIN_X = 1e-3
+    elif args.num_base_classes == 10:
         MIN_X = 1e-4
     if args.num_base_classes == 20:
         MIN_X = 1e-3
@@ -1435,7 +1441,20 @@ if __name__ == "__main__":
         with open(os.path.join(args.attack_plots_path, 'roc_metrics_id_ood.json'), 'w') as f:
             json.dump(metrics_summary, f, indent=2)
 
-    if args.num_base_classes <= 10:
+    if args.num_base_classes == 4:
+        test_preds_per_cls = []
+        val_preds_per_cls = []
+        for cls in range(args.num_base_classes):
+            test_mask = torch.tensor([label.item() == cls for label in test_preds[3]])
+            test_preds_per_cls.append([pred[test_mask] for pred in test_preds])
+            val_mask = torch.tensor([label.item() == cls for label in val_preds[3]])
+            val_preds_per_cls.append([pred[val_mask] for pred in val_preds])
+        create_roc_curve_grid(
+            [(test_preds_per_cls[i], val_preds_per_cls[i]) for i in range(args.num_base_classes)],
+            titles=[f"Class {i}" for i in range(args.num_base_classes)],
+            save_path="roc_curve_per_class",
+        )
+    elif args.num_base_classes == 10:
         test_preds_per_cls = []
         val_preds_per_cls = []
         for cls in range(args.num_base_classes):

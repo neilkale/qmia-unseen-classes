@@ -142,6 +142,7 @@ dependencies:
       - pexpect==4.9.0
       - pillow==11.1.0
       - platformdirs==4.3.6
+      - peft==0.13.2
       - prompt-toolkit==3.0.50
       - propcache==0.3.1
       - protobuf==6.30.1

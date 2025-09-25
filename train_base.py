@@ -120,6 +120,10 @@ def argparser():
         args.num_base_classes = 100
     elif ds_lower.startswith("purchase"):
         args.num_base_classes = 100
+    elif ds_lower.startswith("agnews"):
+        args.num_base_classes = 4
+    elif ds_lower.startswith("20newsgroups"):
+        args.num_base_classes = 20
     else:
         args.num_base_classes = 10
 

@@ -6,7 +6,7 @@ BASE_ARCHITECTURE=mlp-texas-tiny
 QMIA_ARCHITECTURE=mlp-texas-small
 BASE_DATASET=texas/0_16
 ATTACK_DATASET=texas/0_16
-DROPPED_CLASSES_SETTINGS=("20-30" "30-40" "40-50" "50-60" "60-70" "70-80" "80-90" "90-100") # Examples: ("0-10"), (0,1,2,3,4,5,6,7,8,9)
+DROPPED_CLASSES_SETTINGS=("0-10" "20-30" "30-40" "40-50" "50-60" "60-70" "70-80" "80-90" "90-100") # Examples: ("0-10"), (0,1,2,3,4,5,6,7,8,9)
 ###########################
 
 # Train base model
