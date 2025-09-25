@@ -34,6 +34,12 @@ conda activate qmiaenv
 - Download into `data` from: https://github.com/privacytrustlab/datasets/blob/master/dataset_texas.tgz
 - Run `python convert_texas_dataset.py`
 
+#### AG-News
+- Automatically downloaded by HuggingFace within the dataloader.
+
+#### 20 Newsgroups
+- Run `python convert_20news_dataset.py`
+
 ## Experiments
 
 ### CIFAR-10 Class Dropout (Figure 3a)
@@ -102,7 +108,7 @@ Results will be stored in:
 models/mia/base_imagenet-1k/0_16/resnet-50/attack_imagenet-1k/0_16/facebook/convnext-tiny-224/score_fn_top_two_margin/loss_fn_gaussian/cls_drop_none_samples_###/predictions/plots
 ```
 
-### Texas Class Dropout (Figure X)
+### Texas Class Dropout (Figure 5a)
 
 Run `test_dropout_tabular.sh` with the following variables:
 ```bash
@@ -110,7 +116,16 @@ BASE_ARCHITECTURE=mlp-texas-small
 QMIA_ARCHITECTURE=mlp-texas-small
 BASE_DATASET=texas/0_16
 ATTACK_DATASET=texas/0_16
-DROPPED_CLASSES=("0-10")
+```
+
+### 20 Newsgroups Dropout (Figure 5b)
+
+Run `test_dropout_text.sh` with the following variables:
+```bash
+BASE_ARCHITECTURE=gpt2-seqcls-lora
+QMIA_ARCHITECTURE=text-mlp-small #text-distilgpt2
+BASE_DATASET=20newsgroups/0_16
+ATTACK_DATASET=20newsgroups/0_16
 ```
 
 ### Gaussian Mixture Models (GMMs) for Last-Layer Embeddings (Figure 5)

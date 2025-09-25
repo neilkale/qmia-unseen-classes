@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 import torchvision.models as tvm
 import transformers
+from peft import LoraConfig, get_peft_model
 from cifar_architectures import (
     ResNet10,
     ResNet10ExtraInputs,
@@ -22,6 +23,9 @@ from cifar_architectures import (
 #     ResNetConfig, ViTConfig, ViTForImageClassification
 from transformers import (
     AutoModelForImageClassification,
+    AutoModelForSequenceClassification,
+    AutoModel,
+    AutoConfig,
     ResNetConfig,
     ViTConfig,
     ViTForImageClassification,
@@ -297,6 +301,124 @@ def get_fresh_tabular_mlp_model(
 
     return nn.Sequential(*layers)
 
+class HFSeqClsWrapper(nn.Module):
+    """
+    Wraps a Hugging Face sequence classification model to accept LongTensor input_ids
+    and return logits tensor directly, matching the project's expected interface.
+    """
+    def __init__(self, hf_model):
+        super().__init__()
+        self.hf_model = hf_model
+
+    def forward(self, input_ids: torch.Tensor):
+        outputs = self.hf_model(input_ids=input_ids)
+        return outputs.logits
+
+class TextEmbeddingBagMLP(nn.Module):
+    def __init__(self, vocab_size: int, embed_dim: int, hidden_dims: list, num_outputs: int, pad_token_id: int = 50256):
+        super().__init__()
+        self.pad_token_id = pad_token_id
+        self.embedding = nn.Embedding(num_embeddings=vocab_size, embedding_dim=embed_dim, padding_idx=pad_token_id)
+        self.proj = nn.Linear(embed_dim, embed_dim)
+        mlp_layers = []
+        prev = embed_dim
+        for hd in hidden_dims:
+            mlp_layers.append(nn.Linear(prev, hd))
+            mlp_layers.append(nn.GELU())
+            mlp_layers.append(nn.Dropout(0.1))
+            prev = hd
+        mlp_layers.append(nn.Linear(prev, num_outputs))
+        self.mlp = nn.Sequential(*mlp_layers)
+
+    def forward(self, input_ids: torch.Tensor):
+        # input_ids: [batch, seq]
+        mask = (input_ids != self.pad_token_id).float()  # [b, s]
+        emb = self.embedding(input_ids)  # [b, s, d]
+        summed = (emb * mask.unsqueeze(-1)).sum(dim=1)
+        denom = mask.sum(dim=1).clamp_min(1.0).unsqueeze(-1)
+        pooled = summed / denom
+        pooled = self.proj(pooled)
+        return self.mlp(pooled)
+
+def get_text_mlp_model(
+    size: str = "small",
+    num_outputs: int = 2,
+    vocab_size: int = 50257,
+    pad_token_id: int = 50256,
+):
+    presets = {
+        "tiny": {"embed": 128, "hidden": [128]},
+        "small": {"embed": 256, "hidden": [256, 128]},
+        "medium": {"embed": 384, "hidden": [384, 192]},
+    }
+    cfg = presets.get(size)
+    if cfg is None:
+        # allow custom like text-mlp-256_128
+        try:
+            h = [int(x) for x in size.split("_")]
+            cfg = {"embed": max(h[0] // 2, 64), "hidden": h}
+        except Exception:
+            raise NotImplementedError(f"Unknown text-mlp size: {size}")
+    return TextEmbeddingBagMLP(vocab_size=vocab_size, embed_dim=cfg["embed"], hidden_dims=cfg["hidden"], num_outputs=num_outputs, pad_token_id=pad_token_id)
+
+class DistilGPT2EncoderHead(nn.Module):
+    def __init__(self, base_model_name: str = "distilgpt2", num_outputs: int = 2):
+        super().__init__()
+        # Load transformer backbone for hidden states
+        self.backbone = AutoModel.from_pretrained(base_model_name)
+        for p in self.backbone.parameters():
+            p.requires_grad = False
+        hidden_size = self.backbone.config.hidden_size
+        self.head = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size),
+            nn.GELU(),
+            nn.Dropout(0.1),
+            nn.Linear(hidden_size, num_outputs),
+        )
+        pad_id = getattr(self.backbone.config, "pad_token_id", None)
+        eos_id = getattr(self.backbone.config, "eos_token_id", None)
+        self.pad_token_id = pad_id if pad_id is not None else (eos_id if eos_id is not None else 50256)
+
+    def forward(self, input_ids: torch.Tensor):
+        mask = (input_ids != self.pad_token_id).long()
+        out = self.backbone(input_ids=input_ids, attention_mask=mask)
+        hidden = out.last_hidden_state  # [b, s, h]
+        denom = mask.sum(dim=1).clamp_min(1).unsqueeze(-1).float()
+        pooled = (hidden * mask.unsqueeze(-1)).sum(dim=1) / denom
+        return self.head(pooled)
+
+def get_gpt2_seqcls_lora_model(
+    base_model_name: str = "gpt2",
+    num_classes: int = 2,
+    r: int = 8,
+    alpha: int = 16,
+    dropout: float = 0.05,
+):
+    # Configure classification head
+    config = AutoConfig.from_pretrained(base_model_name, num_labels=num_classes)
+    # Ensure pad token handling aligns with dataset padding by EOS when needed
+    if getattr(config, "pad_token_id", None) is None and getattr(config, "eos_token_id", None) is not None:
+        config.pad_token_id = config.eos_token_id
+
+    model = AutoModelForSequenceClassification.from_pretrained(
+        base_model_name,
+        config=config,
+    )
+
+    # Target LoRA modules typical for GPT-2 blocks
+    target_modules = ["c_attn", "c_proj", "c_fc"]
+
+    lora_cfg = LoraConfig(
+        r=r,
+        lora_alpha=alpha,
+        lora_dropout=dropout,
+        bias="none",
+        task_type="SEQ_CLS",
+        target_modules=target_modules,
+    )
+    model = get_peft_model(model, lora_cfg)
+    return HFSeqClsWrapper(model)
+
 def get_model(
     architecture,
     n_outputs,
@@ -304,7 +426,16 @@ def get_model(
     hidden_dims=[],
     extra_inputs=None,
 ):
-    if architecture.startswith("cifar"):
+    if architecture == "gpt2-seqcls-lora":
+        model = get_gpt2_seqcls_lora_model(num_classes=n_outputs)
+    elif architecture.startswith("text-mlp"):
+        # formats: text-mlp, text-mlp-small, text-mlp-256_128
+        parts = architecture.split("-")
+        size = parts[2] if len(parts) > 2 else "small"
+        model = get_text_mlp_model(size=size, num_outputs=n_outputs)
+    elif architecture == "text-distilgpt2":
+        model = DistilGPT2EncoderHead(num_outputs=n_outputs)
+    elif architecture.startswith("cifar"):
         model = get_cifar_resnet_model(
             architecture,
             num_classes=n_outputs,
@@ -338,5 +469,5 @@ def get_model(
         model = get_torchvision_model(
             model_name=architecture, num_classes=n_outputs, hidden_dims=hidden_dims
         )
-
+    
     return model
