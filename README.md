@@ -1,6 +1,6 @@
 # Membership Inference Attacks for Unseen Classes
 
-This repository contains the official implementation of our paper titled "Membership Inference Attacks for Unseen Classes" (https://arxiv.org/abs/2506.06488).
+This repository contains the official implementation of our paper titled "Membership Inference Attacks for Unseen Classes".
 
 ## Setup
 
